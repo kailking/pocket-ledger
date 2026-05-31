@@ -1,0 +1,21 @@
+services:
+  pocket-ledger:
+    image: pocket-ledger:latest
+    build:
+      context: .
+    container_name: pocket-ledger
+    restart: unless-stopped
+    ports:
+      - "${APP_HOST_PORT:-3456}:3000"
+    env_file:
+      - .env
+    environment:
+      APP_ENV: "production"
+      APP_PORT: "3000"
+      APP_URL: "${DOCKER_APP_URL:-http://localhost:3456}"
+      DATABASE_URL: "file:/data/app.db"
+      BACKUP_DIR: "/data/backups"
+      UPLOAD_DIR: "/data/uploads"
+      WEB_DIST_DIR: "/app/public"
+    volumes:
+      - ${LEDGER_DATA_DIR:-./data}:/data

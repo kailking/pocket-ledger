@@ -1,0 +1,18 @@
+services:
+  pocket-ledger:
+    image: pocket-ledger:latest
+    container_name: pocket-ledger
+    restart: unless-stopped
+    ports:
+      - "3456:3000"
+    env_file:
+      - /volume1/docker/pocket-ledger/config/.env
+    environment:
+      APP_ENV: "production"
+      APP_PORT: "3000"
+      DATABASE_URL: "file:/data/app.db"
+      BACKUP_DIR: "/data/backups"
+      UPLOAD_DIR: "/data/uploads"
+      WEB_DIST_DIR: "/app/public"
+    volumes:
+      - /volume1/docker/pocket-ledger/data:/data

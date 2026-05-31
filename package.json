@@ -1,0 +1,31 @@
+{
+  "name": "pocket-ledger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.16.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @pocket-ledger/api",
+    "dev:api": "npm run dev -w @pocket-ledger/api",
+    "dev:web": "npm run dev -w @pocket-ledger/web",
+    "build": "npm run build -w @pocket-ledger/shared && npm run build -w @pocket-ledger/api && npm run build -w @pocket-ledger/web",
+    "typecheck": "npm run typecheck -w @pocket-ledger/shared && npm run typecheck -w @pocket-ledger/api && npm run typecheck -w @pocket-ledger/web",
+    "lint": "npm run lint -w @pocket-ledger/web",
+    "format": "prettier --write .",
+    "docker:build": "docker build -t pocket-ledger:latest .",
+    "docker:config": "docker compose config",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f pocket-ledger",
+    "db:generate": "npm run db:generate -w @pocket-ledger/api",
+    "db:migrate": "npm run db:migrate -w @pocket-ledger/api"
+  },
+  "devDependencies": {
+    "prettier": "^3.8.3",
+    "typescript": "^6.0.3"
+  }
+}
