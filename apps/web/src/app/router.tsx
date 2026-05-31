@@ -14,6 +14,7 @@ const AssetsPage = lazy(() => import("../pages/AssetsPage").then((module) => ({ 
 const CategoryManagementPage = lazy(() =>
   import("../pages/CategoryManagementPage").then((module) => ({ default: module.CategoryManagementPage }))
 );
+const DataClearPage = lazy(() => import("../pages/DataClearPage").then((module) => ({ default: module.DataClearPage })));
 const DataToolsPage = lazy(() => import("../pages/DataToolsPage").then((module) => ({ default: module.DataToolsPage })));
 const EntryEditorPage = lazy(() =>
   import("../pages/EntryEditorPage").then((module) => ({ default: module.EntryEditorPage }))
@@ -123,6 +124,14 @@ export const router = createBrowserRouter([
     element: (
       <AuthGate>
         {withPageFallback(<DataToolsPage />)}
+      </AuthGate>
+    )
+  },
+  {
+    path: "/data-clear",
+    element: (
+      <AuthGate>
+        {withPageFallback(<DataClearPage />)}
       </AuthGate>
     )
   },

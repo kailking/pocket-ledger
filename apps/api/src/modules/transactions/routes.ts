@@ -497,6 +497,36 @@ function listTransactions(query: ListQuery) {
   return rows.slice(query.offset, query.offset + query.limit);
 }
 
+function getTransactionStats() {
+  const transactionRow = sqlite
+    .prepare(
+      `
+        SELECT MIN(happened_on) AS firstTransactionDate, COUNT(*) AS transactionCount
+        FROM transactions
+        WHERE deleted_at IS NULL
+          AND type NOT IN ('transfer_in', 'transfer_out')
+      `
+    )
+    .get() as { firstTransactionDate: string | null; transactionCount: number };
+  const transferRow = sqlite
+    .prepare(
+      `
+        SELECT MIN(happened_on) AS firstTransferDate, COUNT(*) AS transferCount
+        FROM transfers
+        WHERE deleted_at IS NULL
+      `
+    )
+    .get() as { firstTransferDate: string | null; transferCount: number };
+  const firstTransactionDate = [transactionRow.firstTransactionDate, transferRow.firstTransferDate]
+    .filter((date): date is string => Boolean(date))
+    .sort()[0] ?? null;
+
+  return {
+    firstTransactionDate,
+    transactionCount: Number(transactionRow.transactionCount ?? 0) + Number(transferRow.transferCount ?? 0)
+  };
+}
+
 function insertTransfer({
   happenedOn,
   amount,
@@ -800,6 +830,8 @@ export const transactionsRoutes: FastifyPluginAsync = async (app) => {
     const query = listQuerySchema.parse(request.query);
     return ok(listTransactions(query));
   });
+
+  app.get("/stats", async () => ok(getTransactionStats()));
 
   app.post("/", async (request) => {
     const payload = createTransactionSchema.parse(request.body);

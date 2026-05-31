@@ -42,15 +42,31 @@ function getMonthKey(date: string) {
   return date.slice(0, 7);
 }
 
+function localDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDaysKey(dateKey: string, days: number) {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return localDateKey(date);
+}
+
 function formatMonthNode(month: string) {
   const [year, monthNumber] = month.split("-");
   return `${year}年${Number(monthNumber)}月`;
 }
 
 function formatDayNode(date: string) {
+  const todayKey = localDateKey();
+  if (date === todayKey) return { label: "今日", special: true };
+  if (date === addDaysKey(todayKey, -1)) return { label: "昨日", special: true };
+
   const day = new Date(`${date}T00:00:00`);
-  const weekday = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(day);
-  return { dayNumber: String(day.getDate()).padStart(2, "0"), weekday };
+  return { label: String(day.getDate()), special: false };
 }
 
 function groupTransactionsByDay(transactions: LedgerTransaction[]) {
@@ -228,9 +244,8 @@ export function LedgerHome() {
                   <div className="timeline-day-summary__amount timeline-day-summary__amount--income">
                     {group.income > 0 ? `¥${formatMoney(group.income)}` : ""}
                   </div>
-                  <div className="timeline-day-node">
-                    <strong>{dayNode.dayNumber}</strong>
-                    <span>{dayNode.weekday}</span>
+                  <div className={`timeline-day-node ${dayNode.special ? "timeline-day-node--special" : ""}`}>
+                    <strong>{dayNode.label}</strong>
                   </div>
                   <div className="timeline-day-summary__amount timeline-day-summary__amount--expense">
                     {group.expense > 0 ? `¥${formatMoney(group.expense)}` : ""}

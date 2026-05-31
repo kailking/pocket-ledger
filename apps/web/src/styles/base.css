@@ -3744,3 +3744,125 @@ b,
     height: 34px;
   }
 }
+
+.sheet-backdrop {
+  z-index: 90;
+  padding-top: max(12px, env(safe-area-inset-top));
+}
+
+.bottom-sheet {
+  max-height: min(78dvh, calc(100dvh - 24px));
+  padding-bottom: env(safe-area-inset-bottom);
+  overscroll-behavior: contain;
+}
+
+.bottom-sheet .sheet-form,
+.bottom-sheet .sheet-list {
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+}
+
+.category-icon {
+  align-self: center;
+  justify-self: center;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.category-icon svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.menu-row > svg,
+.danger-zone__title > svg {
+  align-self: center;
+  justify-self: center;
+}
+
+.account-card .category-icon,
+.category-report__row .category-icon,
+.compare-card__header .category-icon,
+.timeline-row .category-icon,
+.account-flow-row .category-icon,
+.calendar-entry-row .category-icon {
+  display: inline-grid;
+  place-items: center;
+  align-self: center;
+  justify-self: center;
+}
+
+.profile-avatar--bot {
+  color: #ffffff;
+  background:
+    radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.58), transparent 28%),
+    linear-gradient(145deg, #28b9a4, #533afd 72%);
+  box-shadow: 0 12px 24px rgba(83, 58, 253, 0.22);
+}
+
+.profile-avatar--bot svg {
+  width: 30px;
+  height: 30px;
+  stroke-width: 2.4;
+}
+
+.data-clear-page {
+  padding-bottom: 28px;
+}
+
+.data-clear-page .danger-zone--page {
+  margin: 14px;
+}
+
+.report-chart-panel--donut .chart-center {
+  top: 50%;
+  width: 154px;
+  justify-items: center;
+  transform: translate(-50%, -58%);
+  text-align: center;
+}
+
+.report-chart-panel--donut .chart-center span {
+  line-height: 1.2;
+}
+
+.report-chart-panel--donut .chart-center strong {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+  line-height: 1.18;
+  text-align: center;
+}
+
+.timeline-day-node {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  background: linear-gradient(180deg, #6d5cff 0%, #4933e8 100%);
+  border: 3px solid #ffffff;
+  box-shadow:
+    0 0 0 1px rgba(83, 58, 253, 0.13),
+    0 8px 18px rgba(83, 58, 253, 0.26);
+}
+
+.timeline-day-node--special {
+  background: linear-gradient(180deg, #102a43 0%, #0d253d 100%);
+  box-shadow:
+    0 0 0 1px rgba(13, 37, 61, 0.12),
+    0 8px 18px rgba(13, 37, 61, 0.22);
+}
+
+.timeline-day-node strong {
+  font-size: 17px;
+  line-height: 1;
+}
+
+.timeline-day-node--special strong {
+  font-size: 14px;
+}
+
+@media (max-width: 390px) {
+  .timeline-day-node {
+    width: 46px;
+    height: 46px;
+  }
+}
