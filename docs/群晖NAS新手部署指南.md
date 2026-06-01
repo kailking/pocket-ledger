@@ -107,7 +107,7 @@ git clone https://github.com/kailking/pocket-ledger.git app
 
 - `data/`
 - `imports/`
-- `screenshots/`
+- 本地截图目录
 - `.env`
 - `.codex_tmp/`
 - `node_modules/`

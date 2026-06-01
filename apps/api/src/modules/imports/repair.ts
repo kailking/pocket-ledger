@@ -8,6 +8,24 @@ type RepairOptions = {
   now?: string;
 };
 
+const defaultReceivableGroupId = "loan_group_receivable_default";
+const defaultPayableGroupId = "loan_group_payable_default";
+
+function ensureDefaultLoanGroups(created = new Date().toISOString()) {
+  const insert = sqlite.prepare(`
+    INSERT OR IGNORE INTO loan_groups
+      (id, name, direction, color, icon, include_in_assets, sort_order, is_default, created_at, updated_at)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+  `);
+  insert.run(defaultReceivableGroupId, "应收账", "receivable", "#46B98F", "hand-coins", 1, 10, created, created);
+  insert.run(defaultPayableGroupId, "应付账", "payable", "#C86464", "receipt-text", 0, 10, created, created);
+}
+
+function defaultLoanGroupId(direction: RebuiltLoan["direction"]) {
+  return direction === "receivable" ? defaultReceivableGroupId : defaultPayableGroupId;
+}
+
 type CategoryMismatchRow = {
   transactionId: string;
   transactionType: "income" | "expense";
@@ -454,12 +472,13 @@ function findMatchingLoanTransaction(
 }
 
 function insertRebuiltLoans(loans: RebuiltLoan[], orphanTransactions: OrphanLoanTransactionRow[], now: string) {
+  ensureDefaultLoanGroups(now);
   const insertLoan = sqlite.prepare(`
     INSERT INTO loans
-      (id, direction, counterparty, principal_amount, remaining_amount_cache, interest_amount_cache, account_id,
+      (id, direction, loan_group_id, counterparty, principal_amount, remaining_amount_cache, interest_amount_cache, account_id,
        happened_on, status, note, import_batch_id, closed_at, created_at, updated_at)
     VALUES
-      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertEntry = sqlite.prepare(`
     INSERT INTO loan_entries
@@ -485,6 +504,7 @@ function insertRebuiltLoans(loans: RebuiltLoan[], orphanTransactions: OrphanLoan
     insertLoan.run(
       loanId,
       loan.direction,
+      defaultLoanGroupId(loan.direction),
       loan.counterparty,
       money(loan.principalAmount),
       money(loan.remainingAmount),
@@ -648,6 +668,13 @@ export function repairImportedData(options: RepairOptions = {}) {
   };
 
   sqlite.transaction(() => {
+    ensureDefaultLoanGroups(now);
+    sqlite
+      .prepare("UPDATE loans SET loan_group_id = ? WHERE loan_group_id IS NULL AND direction = 'receivable'")
+      .run(defaultReceivableGroupId);
+    sqlite
+      .prepare("UPDATE loans SET loan_group_id = ? WHERE loan_group_id IS NULL AND direction = 'payable'")
+      .run(defaultPayableGroupId);
     categoriesRebound = rebindMismatchedCategories(now);
     loanResult = rebuildLegacyLoans(now);
   })();

@@ -39,6 +39,26 @@ type AccountStatementRow = {
   createdAt: string;
 };
 
+type LoanGroupRow = {
+  id: string;
+  name: string;
+  direction: "receivable" | "payable";
+  color: string;
+  icon: string;
+  includeInAssets: 0 | 1;
+  sortOrder: number;
+  isDefault: 0 | 1;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  balance: number;
+};
+
+const defaultReceivableGroupId = "loan_group_receivable_default";
+const defaultPayableGroupId = "loan_group_payable_default";
+const receivableVirtualPrefix = "virtual_receivable:";
+const legacyReceivableVirtualId = "virtual_receivable";
+
 const accountKindSchema = z.enum(["asset", "liability"]);
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const optionalTrimmed = z.preprocess((value) => {
@@ -114,40 +134,82 @@ function writeSetting(key: string, value: unknown, updatedAt = new Date().toISOS
     .run(key, JSON.stringify(value), updatedAt);
 }
 
-function isReceivableAssetVisible() {
-  return readSetting<boolean>("assets.receivable.visible", true);
+function ensureLoanGroups(now = new Date().toISOString()) {
+  const legacyReceivableVisible = readSetting<boolean>("assets.receivable.visible", true) ? 1 : 0;
+  const insert = sqlite.prepare(`
+    INSERT OR IGNORE INTO loan_groups
+      (id, name, direction, color, icon, include_in_assets, sort_order, is_default, created_at, updated_at)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+  `);
+  insert.run(defaultReceivableGroupId, "应收账", "receivable", "#46B98F", "hand-coins", legacyReceivableVisible, 10, now, now);
+  insert.run(defaultPayableGroupId, "应付账", "payable", "#C86464", "receipt-text", 0, 10, now, now);
+  sqlite
+    .prepare("UPDATE loans SET loan_group_id = ? WHERE loan_group_id IS NULL AND direction = 'receivable'")
+    .run(defaultReceivableGroupId);
+  sqlite
+    .prepare("UPDATE loans SET loan_group_id = ? WHERE loan_group_id IS NULL AND direction = 'payable'")
+    .run(defaultPayableGroupId);
 }
 
-function receivableSummaryAccount(now = new Date().toISOString()) {
-  const visible = isReceivableAssetVisible();
-  const row = sqlite
+function virtualReceivableId(groupId: string) {
+  return `${receivableVirtualPrefix}${groupId}`;
+}
+
+function parseVirtualReceivableId(id: string) {
+  if (id === legacyReceivableVirtualId) return defaultReceivableGroupId;
+  return id.startsWith(receivableVirtualPrefix) ? id.slice(receivableVirtualPrefix.length) : null;
+}
+
+function receivableSummaryAccounts(now = new Date().toISOString()) {
+  ensureLoanGroups(now);
+  const rows = sqlite
     .prepare(
       `
-      SELECT COALESCE(SUM(CAST(remaining_amount_cache AS REAL)), 0) AS balance
-      FROM loans
-      WHERE deleted_at IS NULL
-        AND direction = 'receivable'
-        AND status = 'open'
+      SELECT
+        g.id,
+        g.name,
+        g.direction,
+        g.color,
+        g.icon,
+        g.include_in_assets AS includeInAssets,
+        g.sort_order AS sortOrder,
+        g.is_default AS isDefault,
+        g.archived_at AS archivedAt,
+        g.created_at AS createdAt,
+        g.updated_at AS updatedAt,
+        COALESCE(SUM(CASE
+          WHEN l.deleted_at IS NULL AND l.direction = 'receivable' AND l.status = 'open'
+          THEN CAST(l.remaining_amount_cache AS REAL)
+          ELSE 0
+        END), 0) AS balance
+      FROM loan_groups g
+      LEFT JOIN loans l ON COALESCE(l.loan_group_id, ?) = g.id
+      WHERE g.archived_at IS NULL
+        AND g.direction = 'receivable'
+      GROUP BY g.id
+      ORDER BY g.sort_order ASC, g.created_at ASC
     `
     )
-    .get() as { balance: number | null };
-  const balance = row.balance ?? 0;
-  return {
-    id: "virtual_receivable",
-    name: "\u5e94\u6536\u8d26",
+    .all(defaultReceivableGroupId) as LoanGroupRow[];
+
+  return rows.map((row) => ({
+    id: virtualReceivableId(row.id),
+    name: row.name,
     type: "receivable_summary",
     kind: "asset" as const,
     initialBalance: "0.00",
-    balance: balance.toFixed(2),
-    color: "#46B98F",
-    icon: "hand-coins",
-    includeInAssets: visible,
-    sortOrder: 9_000_000,
+    balance: Number(row.balance ?? 0).toFixed(2),
+    color: row.color,
+    icon: row.icon,
+    includeInAssets: Boolean(row.includeInAssets),
+    sortOrder: 9_000_000 + row.sortOrder,
     archivedAt: null,
-    createdAt: now,
-    updatedAt: now,
-    virtual: true
-  };
+    createdAt: row.createdAt ?? now,
+    updatedAt: row.updatedAt ?? now,
+    virtual: true,
+    loanGroupId: row.id
+  }));
 }
 
 function monthBounds(year: number, month: number) {
@@ -326,8 +388,8 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
       .all() as AccountRow[];
 
     const serialized = rows.map(serializeAccount);
-    const receivable = query.includeVirtual ? receivableSummaryAccount() : null;
-    return ok(receivable ? [...serialized, receivable] : serialized);
+    const receivables = query.includeVirtual ? receivableSummaryAccounts() : [];
+    return ok([...serialized, ...receivables]);
   });
 
   app.get("/audit/duplicates", async () => {
@@ -617,8 +679,8 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
   app.put("/include-in-assets", async (request) => {
     const payload = includeInAssetsSchema.parse(request.body);
     const accountIds = Array.from(new Set(payload.accountIds));
-    const receivableVisible = accountIds.includes("virtual_receivable");
-    const realAccountIds = accountIds.filter((id) => id !== "virtual_receivable");
+    const receivableGroupIds = new Set(accountIds.map(parseVirtualReceivableId).filter((id): id is string => Boolean(id)));
+    const realAccountIds = accountIds.filter((id) => !parseVirtualReceivableId(id));
     const rows = sqlite
       .prepare("SELECT id FROM accounts WHERE archived_at IS NULL AND hidden = 0")
       .all() as Array<{ id: string }>;
@@ -628,15 +690,26 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
     if (unknownId) {
       throw badRequest(`账户不存在：${unknownId}`);
     }
+    ensureLoanGroups();
+    const groups = sqlite
+      .prepare("SELECT id FROM loan_groups WHERE archived_at IS NULL AND direction = 'receivable'")
+      .all() as Array<{ id: string }>;
+    const validGroupIds = new Set(groups.map((group) => group.id));
+    const unknownGroupId = Array.from(receivableGroupIds).find((id) => !validGroupIds.has(id));
+    if (unknownGroupId) {
+      throw badRequest(`应收分组不存在：${unknownGroupId}`);
+    }
 
     const update = sqlite.prepare("UPDATE accounts SET include_in_assets = ?, updated_at = ? WHERE id = ?");
     const updated = new Date().toISOString();
     sqlite.transaction(() => {
       rows.forEach((row) => update.run(realAccountIds.includes(row.id) ? 1 : 0, updated, row.id));
-      writeSetting("assets.receivable.visible", receivableVisible, updated);
+      const updateGroup = sqlite.prepare("UPDATE loan_groups SET include_in_assets = ?, updated_at = ? WHERE id = ? AND direction = 'receivable'");
+      groups.forEach((group) => updateGroup.run(receivableGroupIds.has(group.id) ? 1 : 0, updated, group.id));
+      writeSetting("assets.receivable.visible", receivableGroupIds.has(defaultReceivableGroupId), updated);
     })();
 
-    return ok({ accountIds: receivableVisible ? [...realAccountIds, "virtual_receivable"] : realAccountIds });
+    return ok({ accountIds: [...realAccountIds, ...Array.from(receivableGroupIds).map(virtualReceivableId)] });
   });
 
   app.put("/:id", async (request) => {

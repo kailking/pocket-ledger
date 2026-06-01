@@ -133,7 +133,8 @@ describe("asset preferences and data safety", () => {
     expect(initial.statusCode).toBe(200);
     expect(initial.json().data).toContainEqual(
       expect.objectContaining({
-        id: "virtual_receivable",
+        id: "virtual_receivable:loan_group_receivable_default",
+        loanGroupId: "loan_group_receivable_default",
         name: "\u5e94\u6536\u8d26",
         balance: "120.00",
         includeInAssets: true,
@@ -142,7 +143,7 @@ describe("asset preferences and data safety", () => {
     );
 
     const accountIds = (initial.json().data as Array<{ id: string; virtual?: boolean }>)
-      .filter((account) => account.id !== "virtual_receivable" && !account.virtual)
+      .filter((account) => !account.virtual)
       .map((account) => account.id);
     const hide = await app.inject({
       method: "PUT",
@@ -160,11 +161,74 @@ describe("asset preferences and data safety", () => {
     expect(hidden.statusCode).toBe(200);
     expect(hidden.json().data).toContainEqual(
       expect.objectContaining({
-        id: "virtual_receivable",
+        id: "virtual_receivable:loan_group_receivable_default",
+        loanGroupId: "loan_group_receivable_default",
         includeInAssets: false,
         virtual: true
       })
     );
+  });
+
+  test("multiple receivable groups produce separate virtual assets and filter hidden loan details", async () => {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const groupResponse = await app.inject({
+      method: "POST",
+      url: "/api/loans/groups",
+      headers: { cookie },
+      payload: { name: "Project Receivable", direction: "receivable", color: "#533AFD", includeInAssets: true }
+    });
+    expect(groupResponse.statusCode).toBe(200);
+    const groupId = groupResponse.json().data.id as string;
+
+    sqlite
+      .prepare(
+        `INSERT INTO loans
+          (id, direction, loan_group_id, counterparty, principal_amount, remaining_amount_cache, interest_amount_cache, account_id,
+           happened_on, status, created_at, updated_at)
+         VALUES
+          ('loan_default_group', 'receivable', 'loan_group_receivable_default', 'Default User', '80.00', '80.00', '0.00', 'cash',
+           '2026-01-01', 'open', ?, ?),
+          ('loan_project_group', 'receivable', ?, 'Project User', '220.00', '220.00', '0.00', 'cash',
+           '2026-01-02', 'open', ?, ?)`
+      )
+      .run(createdAt, createdAt, groupId, createdAt, createdAt);
+
+    const accounts = await app.inject({
+      method: "GET",
+      url: "/api/accounts?includeVirtual=true",
+      headers: { cookie }
+    });
+    expect(accounts.statusCode).toBe(200);
+    expect(accounts.json().data).toContainEqual(
+      expect.objectContaining({
+        id: "virtual_receivable:loan_group_receivable_default",
+        balance: "80.00",
+        loanGroupId: "loan_group_receivable_default"
+      })
+    );
+    expect(accounts.json().data).toContainEqual(
+      expect.objectContaining({
+        id: `virtual_receivable:${groupId}`,
+        balance: "220.00",
+        loanGroupId: groupId
+      })
+    );
+
+    const hideGroup = await app.inject({
+      method: "PUT",
+      url: "/api/accounts/include-in-assets",
+      headers: { cookie },
+      payload: { accountIds: [`virtual_receivable:${groupId}`] }
+    });
+    expect(hideGroup.statusCode).toBe(200);
+
+    const loans = await app.inject({
+      method: "GET",
+      url: "/api/loans?status=open&direction=receivable",
+      headers: { cookie }
+    });
+    expect(loans.statusCode).toBe(200);
+    expect((loans.json().data as Array<{ id: string }>).map((loan) => loan.id)).toEqual(["loan_project_group"]);
   });
 
   test("backup schedule can be saved and clear-all requires multiple confirmations with safety backup", async () => {
@@ -204,5 +268,21 @@ describe("asset preferences and data safety", () => {
     expect(sqlite.prepare("SELECT COUNT(*) AS count FROM transactions").get()).toEqual({ count: 0 });
     expect(sqlite.prepare("SELECT COUNT(*) AS count FROM clear_logs").get()).toEqual({ count: 1 });
     expect(sqlite.prepare("SELECT COUNT(*) AS count FROM users").get()).toEqual({ count: 1 });
+
+    const groupAfterClear = await app.inject({
+      method: "POST",
+      url: "/api/loans/groups",
+      headers: { cookie },
+      payload: { name: "Post Clear Receivable", direction: "receivable", color: "#533AFD", includeInAssets: true }
+    });
+    expect(groupAfterClear.statusCode).toBe(200);
+
+    const groups = await app.inject({
+      method: "GET",
+      url: "/api/loans/groups?direction=receivable",
+      headers: { cookie }
+    });
+    expect(groups.statusCode).toBe(200);
+    expect((groups.json().data as Array<{ name: string }>).map((group) => group.name)).toEqual(["\u5e94\u6536\u8d26", "Post Clear Receivable"]);
   });
 });

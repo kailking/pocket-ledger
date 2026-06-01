@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { BanknoteArrowDown, Check, HandCoins, Plus, ReceiptText, RotateCcw, Trash2 } from "lucide-react";
+import { BanknoteArrowDown, Check, HandCoins, Plus, ReceiptText, RotateCcw, Settings, Trash2 } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 
 import { queryClient } from "../app/queryClient";
 import { BottomSheet } from "../components/BottomSheet";
 import { ConfirmDialog, type ConfirmDialogOptions } from "../components/ConfirmDialog";
-import { apiDelete, apiGet, apiPost } from "../lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
 import { formatMoney } from "../lib/format";
 import type { LedgerAccount } from "../lib/ledgerStore";
 
@@ -29,6 +30,10 @@ type LoanEntry = {
 type LoanSummary = {
   id: string;
   direction: LoanDirection;
+  loanGroupId: string;
+  loanGroupName: string;
+  loanGroupColor: string;
+  loanGroupIncludeInAssets: boolean;
   counterparty: string;
   principalAmount: string;
   remainingAmount: string;
@@ -41,18 +46,37 @@ type LoanSummary = {
   note: string | null;
 };
 
+type LoanGroup = {
+  id: string;
+  name: string;
+  direction: LoanDirection;
+  color: string;
+  icon: string;
+  includeInAssets: boolean;
+  sortOrder: number;
+  isDefault: boolean;
+  balance: string;
+};
+
 type LoanDetail = LoanSummary & {
   entries: LoanEntry[];
 };
 
 type LoanDraft = {
   direction: LoanDirection;
+  loanGroupId: string;
   counterparty: string;
   principalAmount: string;
   accountId: string;
   happenedOn: string;
   dueOn: string;
   note: string;
+};
+
+type GroupDraft = {
+  name: string;
+  color: string;
+  includeInAssets: boolean;
 };
 
 type EntryDraft = {
@@ -103,6 +127,7 @@ function entryTitle(direction: LoanDirection, type: EntryAction) {
 function makeLoanDraft(direction: LoanDirection, accountId: string): LoanDraft {
   return {
     direction,
+    loanGroupId: "",
     counterparty: "",
     principalAmount: "",
     accountId,
@@ -110,6 +135,10 @@ function makeLoanDraft(direction: LoanDirection, accountId: string): LoanDraft {
     dueOn: "",
     note: ""
   };
+}
+
+function makeGroupDraft(): GroupDraft {
+  return { name: "", color: "#46B98F", includeInAssets: true };
 }
 
 function makeEntryDraft(type: EntryAction, accountId: string): EntryDraft {
@@ -124,12 +153,16 @@ function makeEntryDraft(type: EntryAction, accountId: string): EntryDraft {
 }
 
 export function LoansPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [direction, setDirection] = useState<LoanDirection>("receivable");
   const [status, setStatus] = useState<LoanStatusFilter>("open");
+  const [selectedGroupId, setSelectedGroupId] = useState(() => searchParams.get("groupId") ?? "all");
+  const [groupPanelOpen, setGroupPanelOpen] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [selectedLoanId, setSelectedLoanId] = useState<string | null>(null);
   const [entryDraft, setEntryDraft] = useState<EntryDraft | null>(null);
   const [draft, setDraft] = useState<LoanDraft>(() => makeLoanDraft("receivable", ""));
+  const [groupDraft, setGroupDraft] = useState<GroupDraft>(makeGroupDraft);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogOptions | null>(null);
 
   const { data: accounts = [] } = useQuery({
@@ -138,15 +171,25 @@ export function LoansPage() {
   });
   const realAccounts = accounts.filter((account) => !account.virtual);
   const defaultAccountId = realAccounts[0]?.id ?? "";
-  const hasVirtualReceivable = accounts.some((account) => account.id === "virtual_receivable" && account.includeInAssets);
+  const { data: loanGroups = [] } = useQuery({
+    queryKey: ["loans", "groups", "receivable"],
+    queryFn: () => apiGet<LoanGroup[]>("/api/loans/groups?direction=receivable")
+  });
+  const visibleLoanGroups = useMemo(() => loanGroups.filter((group) => group.includeInAssets), [loanGroups]);
+  const hasVirtualReceivable = visibleLoanGroups.length > 0;
+  const selectedLoanGroup = selectedGroupId === "all" ? null : visibleLoanGroups.find((group) => group.id === selectedGroupId) ?? null;
 
   const { data: summaryLoans = [] } = useQuery({
     queryKey: ["loans", "summary"],
     queryFn: () => apiGet<LoanSummary[]>("/api/loans?status=open&direction=all")
   });
   const { data: loans = [], isLoading } = useQuery({
-    queryKey: ["loans", status, direction],
-    queryFn: () => apiGet<LoanSummary[]>(`/api/loans?status=${status}&direction=${direction}`)
+    queryKey: ["loans", status, direction, selectedGroupId],
+    queryFn: () => {
+      const params = new URLSearchParams({ status, direction });
+      if (direction === "receivable" && selectedGroupId !== "all") params.set("groupId", selectedGroupId);
+      return apiGet<LoanSummary[]>(`/api/loans?${params.toString()}`);
+    }
   });
   const { data: selectedLoan } = useQuery({
     queryKey: ["loans", selectedLoanId],
@@ -155,22 +198,48 @@ export function LoansPage() {
   });
 
   const summary = useMemo(() => {
+    const visibleReceivableIds = new Set(visibleLoanGroups.map((group) => group.id));
     return summaryLoans.reduce(
       (totals, loan) => {
         const amount = Number(loan.remainingAmount);
-        if (loan.direction === "receivable") totals.receivable += amount;
-        else totals.payable += amount;
+        if (loan.direction === "receivable" && visibleReceivableIds.has(loan.loanGroupId)) totals.receivable += amount;
+        if (loan.direction === "payable") totals.payable += amount;
         return totals;
       },
       { receivable: 0, payable: 0 }
     );
-  }, [summaryLoans]);
+  }, [summaryLoans, visibleLoanGroups]);
+
+  const receivableHeroAmount = selectedLoanGroup ? Number(selectedLoanGroup.balance) : summary.receivable;
+
+  const selectGroup = useCallback(
+    (groupId: string) => {
+      setSelectedGroupId(groupId);
+      const next = new URLSearchParams(searchParams);
+      if (groupId === "all") next.delete("groupId");
+      else next.set("groupId", groupId);
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams]
+  );
+
+  useEffect(() => {
+    const groupId = searchParams.get("groupId") ?? "all";
+    setSelectedGroupId(groupId);
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (selectedGroupId !== "all" && loanGroups.length > 0 && !visibleLoanGroups.some((group) => group.id === selectedGroupId)) {
+      selectGroup("all");
+    }
+  }, [loanGroups, selectedGroupId, selectGroup, visibleLoanGroups]);
 
   const createMutation = useMutation({
     mutationFn: () =>
       apiPost<LoanDetail>("/api/loans", {
         ...draft,
         accountId: draft.accountId || defaultAccountId,
+        loanGroupId: draft.direction === "receivable" ? draft.loanGroupId || visibleLoanGroups[0]?.id || undefined : undefined,
         principalAmount: Number(draft.principalAmount),
         dueOn: draft.dueOn || undefined
       }),
@@ -184,6 +253,36 @@ export function LoansPage() {
       setSelectedLoanId(loan.id);
       setEditorOpen(false);
       setDraft(makeLoanDraft(loan.direction, defaultAccountId));
+    }
+  });
+  const createGroupMutation = useMutation({
+    mutationFn: () =>
+      apiPost<LoanGroup>("/api/loans/groups", {
+        direction: "receivable",
+        name: groupDraft.name,
+        color: groupDraft.color,
+        icon: "hand-coins",
+        includeInAssets: groupDraft.includeInAssets
+      }),
+    onSuccess: async (group) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["loans", "groups"] }),
+        queryClient.invalidateQueries({ queryKey: ["accounts"] })
+      ]);
+      setGroupDraft(makeGroupDraft());
+      selectGroup(group.id);
+    }
+  });
+  const updateGroupMutation = useMutation({
+    mutationFn: (group: LoanGroup) =>
+      apiPut<LoanGroup>(`/api/loans/groups/${group.id}`, {
+        includeInAssets: !group.includeInAssets
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["loans"] }),
+        queryClient.invalidateQueries({ queryKey: ["accounts"] })
+      ]);
     }
   });
 
@@ -271,7 +370,11 @@ export function LoansPage() {
   });
 
   function openCreate(nextDirection: LoanDirection) {
-    setDraft(makeLoanDraft(nextDirection, defaultAccountId));
+    const nextDraft = makeLoanDraft(nextDirection, defaultAccountId);
+    if (nextDirection === "receivable") {
+      nextDraft.loanGroupId = selectedGroupId !== "all" ? selectedGroupId : visibleLoanGroups[0]?.id ?? "";
+    }
+    setDraft(nextDraft);
     setEditorOpen(true);
   }
 
@@ -338,15 +441,38 @@ export function LoansPage() {
           </div>
           <span>{direction === "receivable" ? "应收总额" : "应付总额"}</span>
           <strong className={direction === "receivable" && !hasVirtualReceivable ? "loan-hero__amount--muted" : undefined}>
-            {direction === "receivable" && !hasVirtualReceivable ? "未启用" : `¥${formatMoney(direction === "receivable" ? summary.receivable : summary.payable)}`}
+            {direction === "receivable" && !hasVirtualReceivable ? "未启用" : `¥${formatMoney(direction === "receivable" ? receivableHeroAmount : summary.payable)}`}
           </strong>
           <small>
             {direction === "receivable" && !hasVirtualReceivable
-              ? "后端未返回应收账虚拟账户，暂不突出应收总额，借贷列表仍可正常查看"
+              ? "当前应收分组均未计入资产，借贷列表同步不突出显示"
               : direction === "receivable"
-                ? "借出后账户扣款，收款后账户增加"
+                ? selectedLoanGroup
+                  ? `${selectedLoanGroup.name} · 借出后账户扣款，收款后账户增加`
+                  : "借出后账户扣款，收款后账户增加"
                 : "借入后账户增加，还款后账户扣款"}
           </small>
+          {direction === "receivable" ? (
+            <div className="loan-group-tabs">
+              <button className={selectedGroupId === "all" ? "is-active" : ""} type="button" onClick={() => selectGroup("all")}>
+                全部
+              </button>
+              {visibleLoanGroups.map((group) => (
+                <button
+                  className={selectedGroupId === group.id ? "is-active" : ""}
+                  key={group.id}
+                  style={{ "--loan-group-color": group.color } as CSSProperties}
+                  type="button"
+                  onClick={() => selectGroup(group.id)}
+                >
+                  {group.name}
+                </button>
+              ))}
+              <button className="loan-group-tabs__settings" type="button" aria-label="管理应收分组" onClick={() => setGroupPanelOpen(true)}>
+                <Settings aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
         </header>
       </div>
 
@@ -370,6 +496,7 @@ export function LoansPage() {
                 <strong>{loan.counterparty}</strong>
                 <small>
                   {loan.accountName ? `${loan.accountName} · ` : ""}
+                  {loan.direction === "receivable" && loan.loanGroupName ? `${loan.loanGroupName} · ` : ""}
                   {loan.dueOn ? `${loan.dueOn} 到期 · ` : ""}
                   {loan.note || "无备注"}
                 </small>
@@ -391,6 +518,58 @@ export function LoansPage() {
         </button>
       </div>
 
+      {groupPanelOpen ? (
+        <BottomSheet
+          title="应收分组"
+          confirmLabel={createGroupMutation.isPending ? "保存中" : "新增"}
+          confirmDisabled={!groupDraft.name.trim() || createGroupMutation.isPending}
+          onClose={() => setGroupPanelOpen(false)}
+          onConfirm={() => createGroupMutation.mutate()}
+        >
+          {createGroupMutation.error ? <p className="form-error">{createGroupMutation.error.message}</p> : null}
+          {updateGroupMutation.error ? <p className="form-error">{updateGroupMutation.error.message}</p> : null}
+          <div className="loan-group-manager">
+            <div className="loan-group-manager__list">
+              {loanGroups.map((group) => (
+                <button className={!group.includeInAssets ? "is-muted" : ""} key={group.id} type="button" onClick={() => updateGroupMutation.mutate(group)}>
+                  <span style={{ background: group.color }} />
+                  <strong>{group.name}</strong>
+                  <small>{group.includeInAssets ? "计入资产/借贷显示" : "已隐藏"}</small>
+                  <b>¥{formatMoney(Number(group.balance))}</b>
+                </button>
+              ))}
+            </div>
+            <div className="sheet-form">
+              <label className="sheet-field">
+                新分组名称
+                <input value={groupDraft.name} placeholder="例如：项目应收" onChange={(event) => setGroupDraft((current) => ({ ...current, name: event.target.value }))} />
+              </label>
+              <div className="swatch-row">
+                {["#46B98F", "#533AFD", "#43A3C8", "#D9A441", "#C86464", "#A06CD5"].map((color) => (
+                  <button
+                    key={color}
+                    className={groupDraft.color === color ? "is-selected" : ""}
+                    style={{ background: color }}
+                    type="button"
+                    aria-label={color}
+                    onClick={() => setGroupDraft((current) => ({ ...current, color }))}
+                  />
+                ))}
+              </div>
+              <button
+                className={`state-toggle full-width-action ${groupDraft.includeInAssets ? "is-selected" : ""}`}
+                type="button"
+                aria-pressed={groupDraft.includeInAssets}
+                onClick={() => setGroupDraft((current) => ({ ...current, includeInAssets: !current.includeInAssets }))}
+              >
+                <Check aria-hidden="true" />
+                <span>{groupDraft.includeInAssets ? "计入资产并在借贷页显示" : "暂不计入资产"}</span>
+              </button>
+            </div>
+          </div>
+        </BottomSheet>
+      ) : null}
+
       {editorOpen ? (
         <BottomSheet
           title={draft.direction === "receivable" ? "新增借出" : "新增借入"}
@@ -405,18 +584,37 @@ export function LoansPage() {
               <button
                 type="button"
                 aria-selected={draft.direction === "receivable"}
-                onClick={() => setDraft((current) => ({ ...current, direction: "receivable" }))}
+                onClick={() =>
+                  setDraft((current) => ({
+                    ...current,
+                    direction: "receivable",
+                    loanGroupId: current.loanGroupId || visibleLoanGroups[0]?.id || ""
+                  }))
+                }
               >
                 借出
               </button>
               <button
                 type="button"
                 aria-selected={draft.direction === "payable"}
-                onClick={() => setDraft((current) => ({ ...current, direction: "payable" }))}
+                onClick={() => setDraft((current) => ({ ...current, direction: "payable", loanGroupId: "" }))}
               >
                 借入
               </button>
             </div>
+
+            {draft.direction === "receivable" ? (
+              <label className="sheet-field">
+                应收分组
+                <select value={draft.loanGroupId || visibleLoanGroups[0]?.id || ""} onChange={(event) => setDraft((current) => ({ ...current, loanGroupId: event.target.value }))}>
+                  {visibleLoanGroups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {group.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
 
             <label className="sheet-field">
               对方名称
@@ -491,6 +689,12 @@ export function LoansPage() {
                 <span>使用账户</span>
                 <b>{selectedLoan.accountName ?? "未关联"}</b>
               </div>
+              {selectedLoan.direction === "receivable" ? (
+                <div>
+                  <span>应收分组</span>
+                  <b>{selectedLoan.loanGroupName}</b>
+                </div>
+              ) : null}
               <div>
                 <span>时间</span>
                 <b>{selectedLoan.happenedOn}</b>

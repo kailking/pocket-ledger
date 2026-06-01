@@ -193,6 +193,15 @@ export function AssetsPage() {
     setEditorOpen(true);
   }
 
+  function openAccountDetail(account: LedgerAccount) {
+    if (!account.virtual) {
+      navigate(`/assets/accounts/${account.id}`);
+      return;
+    }
+    const groupQuery = account.loanGroupId ? `?groupId=${encodeURIComponent(account.loanGroupId)}` : "";
+    navigate(`/loans${groupQuery}`);
+  }
+
   function archiveAccount() {
     if (!editingAccount) return;
     setConfirmDialog({
@@ -273,7 +282,7 @@ export function AssetsPage() {
               key={account.id}
               style={{ background: account.color }}
               type="button"
-              onClick={() => navigate(account.virtual ? "/loans" : `/assets/accounts/${account.id}`)}
+              onClick={() => openAccountDetail(account)}
             >
               <CategoryIcon color="rgba(255,255,255,0.24)" icon={account.icon} size="sm" />
               <div>

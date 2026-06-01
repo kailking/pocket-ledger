@@ -3860,6 +3860,116 @@ b,
   font-size: 14px;
 }
 
+.loan-group-tabs {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  margin-top: 14px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.loan-group-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.loan-group-tabs button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 12px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+
+.loan-group-tabs button.is-active {
+  color: #0d253d;
+  background: #ffffff;
+  border-color: #ffffff;
+}
+
+.loan-group-tabs button:not(.loan-group-tabs__settings)::before {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  background: var(--loan-group-color, #46b98f);
+  border-radius: 50%;
+  content: "";
+}
+
+.loan-group-tabs__settings {
+  display: inline-grid;
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  place-items: center;
+}
+
+.loan-group-tabs__settings svg {
+  width: 17px;
+  height: 17px;
+}
+
+.loan-group-manager {
+  display: grid;
+  gap: 12px;
+  padding-top: 10px;
+}
+
+.loan-group-manager__list {
+  display: grid;
+  gap: 8px;
+  padding: 0 14px;
+}
+
+.loan-group-manager__list button {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 54px;
+  gap: 10px;
+  padding: 0 12px;
+  color: var(--text);
+  text-align: left;
+  background: #f7f9fc;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.loan-group-manager__list button > span {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.loan-group-manager__list button > strong,
+.loan-group-manager__list button > small {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loan-group-manager__list button > small {
+  margin-top: -10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.loan-group-manager__list button > b {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  color: var(--income);
+  font-size: 14px;
+}
+
+.loan-group-manager__list button.is-muted {
+  opacity: 0.58;
+}
+
 @media (max-width: 390px) {
   .timeline-day-node {
     width: 46px;

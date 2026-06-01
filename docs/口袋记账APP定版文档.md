@@ -24,7 +24,7 @@
 
 文件：
 
-- `imports/user_id-1730175-1772384649.xls`
+- `imports/pocket-ledger-export.xlsx`
 
 格式判断：
 
@@ -77,8 +77,8 @@
 
 已分析目录：
 
-- `screenshots/`
-- `screenshots2/`
+- 本地截图目录
+- 本地补充截图目录
 
 已覆盖页面：
 
@@ -402,6 +402,12 @@ Tab：
 - 应付账
 - 自定义
 
+应收账在资产页中按“应收分组 / 应收账簿”汇总展示：
+
+- 每个应收分组生成一个虚拟资产账户，例如“应收账”“项目应收”等。
+- 分组可单独设置是否计入资产；设置为不计入时，资产页隐藏该虚拟账户，借贷页默认也不显示该分组的未完成应收明细。
+- 老数据导入和历史借贷记录默认归入系统默认分组“应收账”，后续可新建多个分组承接不同应收总账。
+
 资产计算：
 
 - 资产总额 = 计入资产的资产账户余额合计。
@@ -451,6 +457,7 @@ Tab：
 
 - 对方名称。
 - 借贷类型。
+- 应收分组（仅借出/应收类记录需要选择）。
 - 金额。
 - 使用账户。
 - 日期。
@@ -486,6 +493,7 @@ Tab：
 - `借入借出` 工作表作为主借贷数据来源。
 - `收支记录` 中分类为 `借出`、`借入`、`收款`、`还款` 的记录作为账户流水。
 - 导入时按日期、金额、对方、账户关联，避免重复计算。
+- 导入的应收记录默认进入系统默认应收分组；如后续有多个应收总账，可在导入后通过借贷分组继续整理。
 
 ### 5.9 预算
 
@@ -683,6 +691,7 @@ Tab：
 | --- | --- | --- |
 | id | text | 主键 |
 | direction | text | receivable / payable |
+| loan_group_id | text | 借贷分组，历史数据为空时按 direction 回填默认分组 |
 | counterparty | text | 对方名称 |
 | principal_amount | decimal | 本金 |
 | remaining_amount_cache | decimal | 剩余金额缓存 |
@@ -699,13 +708,29 @@ Tab：
 | closed_at | datetime | 结束时间 |
 | deleted_at | datetime | 软删除 |
 
-### 6.9 loan_entries
+### 6.9 loan_groups
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| id | text | 主键 |
+| name | text | 分组名称 |
+| direction | text | receivable / payable |
+| color | text | 分组颜色 |
+| icon | text | 图标 |
+| include_in_assets | boolean | 是否计入资产；应收分组关闭后资产页和借贷默认列表隐藏 |
+| sort_order | integer | 排序 |
+| is_default | boolean | 是否默认分组 |
+| archived_at | datetime | 归档时间 |
+| created_at | datetime | 创建时间 |
+| updated_at | datetime | 更新时间 |
+
+### 6.10 loan_entries
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | id | text | 主键 |
 | loan_id | text | 借贷主记录 |
-| type | text | principal / repayment / interest |
+| type | text | principal / repayment / additional / interest |
 | amount | decimal | 金额 |
 | account_id | text | 使用账户 |
 | book_id | text | 账本 |
@@ -715,7 +740,7 @@ Tab：
 | created_at | datetime | 创建时间 |
 | updated_at | datetime | 更新时间 |
 
-### 6.10 budgets
+### 6.11 budgets
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -727,7 +752,7 @@ Tab：
 | created_at | datetime | 创建时间 |
 | updated_at | datetime | 更新时间 |
 
-### 6.11 budget_categories
+### 6.12 budget_categories
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -738,7 +763,7 @@ Tab：
 | created_at | datetime | 创建时间 |
 | updated_at | datetime | 更新时间 |
 
-### 6.12 import_batches
+### 6.13 import_batches
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -754,7 +779,7 @@ Tab：
 | summary | json | 导入摘要 |
 | created_at | datetime | 创建时间 |
 
-### 6.13 import_warnings
+### 6.14 import_warnings
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -854,6 +879,9 @@ Tab：
 
 借贷：
 
+- `GET /api/loans/groups`
+- `POST /api/loans/groups`
+- `PUT /api/loans/groups/:groupId`
 - `GET /api/loans`
 - `GET /api/loans/:id`
 - `POST /api/loans`

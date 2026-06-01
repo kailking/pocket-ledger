@@ -30,7 +30,7 @@ export type LoanDirection = "receivable" | "payable";
 
 export type LoanStatus = "open" | "closed";
 
-export type LoanEntryType = "principal" | "repayment" | "interest";
+export type LoanEntryType = "principal" | "repayment" | "additional" | "interest";
 
 export type ImportStatus = "pending" | "imported" | "failed";
 
@@ -107,4 +107,3 @@ export const SPECIAL_CATEGORY_NAMES = {
   repayment: "还款",
   collection: "收款"
 } as const;
-

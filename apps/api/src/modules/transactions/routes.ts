@@ -657,7 +657,7 @@ function createTransaction(payload: CreateTransactionPayload) {
     const toAccountId = accountIdByInput({
       id: payload.toAccountId,
       name: payload.toAccount,
-      fallbackId: "alipay"
+      fallbackId: "debit"
     });
     if (fromAccountId === toAccountId) {
       throw badRequest("转出账户和转入账户不能相同");
@@ -676,7 +676,7 @@ function createTransaction(payload: CreateTransactionPayload) {
   const accountId = accountIdByInput({
     id: payload.accountId,
     name: payload.account,
-    fallbackId: "alipay"
+    fallbackId: "cash"
   });
   const categoryId = categoryIdByInput(payload.categoryId, payload.type);
 

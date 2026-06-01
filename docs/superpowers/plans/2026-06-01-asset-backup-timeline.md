@@ -50,7 +50,7 @@ Create tests that prove:
 Run:
 
 ```powershell
-& 'C:\Program Files\nodejs\npm.cmd' run test -w @pocket-ledger/api -- src/__tests__/asset-preferences.test.ts src/__tests__/data-safety.test.ts
+npm run test -w @pocket-ledger/api -- src/__tests__/asset-preferences.test.ts src/__tests__/data-safety.test.ts
 ```
 
 Expected: FAIL because endpoints/columns do not exist.
@@ -171,9 +171,9 @@ Keep existing sentinel and pull-to-refresh. Verify scrolling loads the next page
 - [ ] **Step 1: Run tests**
 
 ```powershell
-& 'C:\Program Files\nodejs\npm.cmd' run test -w @pocket-ledger/api
-& 'C:\Program Files\nodejs\npm.cmd' run typecheck
-& 'C:\Program Files\nodejs\npm.cmd' run build
+npm run test -w @pocket-ledger/api
+npm run typecheck
+npm run build
 ```
 
 - [ ] **Step 2: Rebuild Docker**
@@ -193,4 +193,3 @@ Use the in-app browser at 430x932 to verify:
 - loan payable is less prominent;
 - home timeline day/month grouping and infinite loading work;
 - no horizontal overflow and no console errors.
-

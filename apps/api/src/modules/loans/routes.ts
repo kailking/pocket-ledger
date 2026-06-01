@@ -12,6 +12,10 @@ type LoanEntryType = "principal" | "repayment" | "additional" | "interest";
 type LoanRow = {
   id: string;
   direction: LoanDirection;
+  loanGroupId: string | null;
+  loanGroupName: string | null;
+  loanGroupColor: string | null;
+  loanGroupIncludeInAssets: 0 | 1 | null;
   counterparty: string;
   principalAmount: string;
   remainingAmount: string;
@@ -25,6 +29,21 @@ type LoanRow = {
   closedAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+type LoanGroupRow = {
+  id: string;
+  name: string;
+  direction: LoanDirection;
+  color: string;
+  icon: string;
+  includeInAssets: 0 | 1;
+  sortOrder: number;
+  isDefault: 0 | 1;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  balance: number;
 };
 
 type LoanEntryRow = {
@@ -50,12 +69,33 @@ const optionalText = z.preprocess((value) => {
 const listQuerySchema = z.object({
   status: z.enum(["open", "closed", "all"]).default("open"),
   direction: z.enum(["receivable", "payable", "all"]).default("all"),
+  groupId: z.string().trim().optional(),
+  includeHiddenGroups: z.coerce.boolean().default(false),
   q: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(500).default(200)
 });
 
+const groupListQuerySchema = z.object({
+  direction: z.enum(["receivable", "payable", "all"]).default("receivable")
+});
+
+const groupPayloadSchema = z.object({
+  name: z.string().trim().min(1, "请填写分组名称").max(40),
+  direction: z.enum(["receivable", "payable"]).default("receivable"),
+  color: z.string().trim().min(1).max(40).default("#46B98F"),
+  icon: z.string().trim().min(1).max(40).default("hand-coins"),
+  includeInAssets: z.coerce.boolean().default(true)
+});
+
+const groupUpdateSchema = groupPayloadSchema.partial();
+
+const groupParamsSchema = z.object({
+  groupId: z.string().min(1)
+});
+
 const createLoanSchema = z.object({
   direction: z.enum(["receivable", "payable"]),
+  loanGroupId: z.string().trim().optional(),
   counterparty: z.string().trim().min(1, "请填写借贷对象"),
   principalAmount: moneySchema,
   accountId: z.string().trim().min(1, "请选择使用账户"),
@@ -74,6 +114,9 @@ const createEntrySchema = z.object({
   note: optionalText
 });
 
+const defaultReceivableGroupId = "loan_group_receivable_default";
+const defaultPayableGroupId = "loan_group_payable_default";
+
 function toMoney(value: number): string {
   return value.toFixed(2);
 }
@@ -84,6 +127,102 @@ function toCents(value: string | number): number {
 
 function fromCents(value: number): string {
   return (value / 100).toFixed(2);
+}
+
+function ensureLoanGroups(now = new Date().toISOString()) {
+  const insert = sqlite.prepare(`
+    INSERT OR IGNORE INTO loan_groups
+      (id, name, direction, color, icon, include_in_assets, sort_order, is_default, created_at, updated_at)
+    VALUES
+      (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+  `);
+  insert.run(defaultReceivableGroupId, "应收账", "receivable", "#46B98F", "hand-coins", 1, 10, now, now);
+  insert.run(defaultPayableGroupId, "应付账", "payable", "#C86464", "receipt-text", 0, 10, now, now);
+  sqlite
+    .prepare("UPDATE loans SET loan_group_id = ? WHERE loan_group_id IS NULL AND direction = 'receivable'")
+    .run(defaultReceivableGroupId);
+  sqlite
+    .prepare("UPDATE loans SET loan_group_id = ? WHERE loan_group_id IS NULL AND direction = 'payable'")
+    .run(defaultPayableGroupId);
+}
+
+function defaultGroupId(direction: LoanDirection) {
+  return direction === "receivable" ? defaultReceivableGroupId : defaultPayableGroupId;
+}
+
+function validateLoanGroup(direction: LoanDirection, groupId?: string | null) {
+  ensureLoanGroups();
+  const nextGroupId = groupId || defaultGroupId(direction);
+  const row = sqlite
+    .prepare("SELECT id FROM loan_groups WHERE id = ? AND direction = ? AND archived_at IS NULL LIMIT 1")
+    .get(nextGroupId, direction) as { id: string } | undefined;
+  if (!row) throw badRequest("应收分组不存在或类型不匹配");
+  return row.id;
+}
+
+function serializeLoan(row: LoanRow) {
+  return {
+    ...row,
+    loanGroupId: row.loanGroupId ?? defaultGroupId(row.direction),
+    loanGroupName: row.loanGroupName ?? (row.direction === "receivable" ? "应收账" : "应付账"),
+    loanGroupColor: row.loanGroupColor ?? (row.direction === "receivable" ? "#46B98F" : "#C86464"),
+    loanGroupIncludeInAssets: Boolean(row.loanGroupIncludeInAssets ?? (row.direction === "receivable" ? 1 : 0))
+  };
+}
+
+function readLoanGroups(direction: LoanDirection | "all" = "receivable") {
+  ensureLoanGroups();
+  const where = ["g.archived_at IS NULL"];
+  const params: unknown[] = [];
+  if (direction !== "all") {
+    where.push("g.direction = ?");
+    params.push(direction);
+  }
+  return sqlite
+    .prepare(
+      `
+      SELECT
+        g.id,
+        g.name,
+        g.direction,
+        g.color,
+        g.icon,
+        g.include_in_assets AS includeInAssets,
+        g.sort_order AS sortOrder,
+        g.is_default AS isDefault,
+        g.archived_at AS archivedAt,
+        g.created_at AS createdAt,
+        g.updated_at AS updatedAt,
+        COALESCE(SUM(CASE
+          WHEN l.deleted_at IS NULL AND l.status = 'open'
+          THEN CAST(l.remaining_amount_cache AS REAL)
+          ELSE 0
+        END), 0) AS balance
+      FROM loan_groups g
+      LEFT JOIN loans l ON COALESCE(l.loan_group_id, CASE l.direction WHEN 'receivable' THEN 'loan_group_receivable_default' ELSE 'loan_group_payable_default' END) = g.id AND l.direction = g.direction
+      WHERE ${where.join(" AND ")}
+      GROUP BY g.id
+      ORDER BY g.sort_order ASC, g.created_at ASC
+    `
+    )
+    .all(...params) as LoanGroupRow[];
+}
+
+function serializeLoanGroup(row: LoanGroupRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    direction: row.direction,
+    color: row.color,
+    icon: row.icon,
+    includeInAssets: Boolean(row.includeInAssets),
+    sortOrder: row.sortOrder,
+    isDefault: Boolean(row.isDefault),
+    balance: Number(row.balance ?? 0).toFixed(2),
+    archivedAt: row.archivedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt
+  };
 }
 
 function transactionSignedAmount(direction: LoanDirection, type: LoanEntryType, amount: number) {
@@ -108,6 +247,10 @@ function requireLoan(id: string): LoanRow {
       SELECT
         l.id,
         l.direction,
+        COALESCE(l.loan_group_id, CASE l.direction WHEN 'receivable' THEN 'loan_group_receivable_default' ELSE 'loan_group_payable_default' END) AS loanGroupId,
+        lg.name AS loanGroupName,
+        lg.color AS loanGroupColor,
+        lg.include_in_assets AS loanGroupIncludeInAssets,
         l.counterparty,
         l.principal_amount AS principalAmount,
         l.remaining_amount_cache AS remainingAmount,
@@ -123,6 +266,7 @@ function requireLoan(id: string): LoanRow {
         l.updated_at AS updatedAt
       FROM loans l
       LEFT JOIN accounts a ON a.id = l.account_id
+      LEFT JOIN loan_groups lg ON lg.id = COALESCE(l.loan_group_id, CASE l.direction WHEN 'receivable' THEN 'loan_group_receivable_default' ELSE 'loan_group_payable_default' END)
       WHERE l.id = ? AND l.deleted_at IS NULL
       LIMIT 1
     `
@@ -305,6 +449,69 @@ function applyLoanTotals(loanId: string, updated: string) {
 }
 
 export const loansRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/groups", async (request) => {
+    const query = groupListQuerySchema.parse(request.query ?? {});
+    return ok(readLoanGroups(query.direction).map(serializeLoanGroup));
+  });
+
+  app.post("/groups", async (request) => {
+    const body = groupPayloadSchema.parse(request.body ?? {});
+    const now = new Date().toISOString();
+    ensureLoanGroups(now);
+    const id = createId("loan_group");
+    const sortRow = sqlite
+      .prepare("SELECT COALESCE(MAX(sort_order), 0) AS sortOrder FROM loan_groups WHERE direction = ? AND archived_at IS NULL")
+      .get(body.direction) as { sortOrder: number };
+    sqlite
+      .prepare(
+        `
+        INSERT INTO loan_groups
+          (id, name, direction, color, icon, include_in_assets, sort_order, is_default, created_at, updated_at)
+        VALUES
+          (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `
+      )
+      .run(id, body.name, body.direction, body.color, body.icon, body.includeInAssets ? 1 : 0, sortRow.sortOrder + 10, now, now);
+    return ok(serializeLoanGroup(readLoanGroups(body.direction).find((group) => group.id === id) as LoanGroupRow));
+  });
+
+  app.put("/groups/:groupId", async (request) => {
+    const { groupId } = groupParamsSchema.parse(request.params);
+    const existing = sqlite
+      .prepare("SELECT id, direction, is_default AS isDefault FROM loan_groups WHERE id = ? AND archived_at IS NULL LIMIT 1")
+      .get(groupId) as { id: string; direction: LoanDirection; isDefault: 0 | 1 } | undefined;
+    if (!existing) throw notFound("应收分组不存在");
+    const body = groupUpdateSchema.parse(request.body ?? {});
+    const nextDirection = body.direction ?? existing.direction;
+    if (existing.isDefault && nextDirection !== existing.direction) {
+      throw badRequest("默认分组不能改变类型");
+    }
+    const now = new Date().toISOString();
+    sqlite
+      .prepare(
+        `
+        UPDATE loan_groups
+        SET name = COALESCE(?, name),
+            direction = ?,
+            color = COALESCE(?, color),
+            icon = COALESCE(?, icon),
+            include_in_assets = COALESCE(?, include_in_assets),
+            updated_at = ?
+        WHERE id = ?
+      `
+      )
+      .run(
+        body.name,
+        nextDirection,
+        body.color,
+        body.icon,
+        body.includeInAssets === undefined ? null : body.includeInAssets ? 1 : 0,
+        now,
+        existing.id
+      );
+    return ok(serializeLoanGroup(readLoanGroups(nextDirection).find((group) => group.id === existing.id) as LoanGroupRow));
+  });
+
   app.get("/", async (request) => {
     const query = listQuerySchema.parse(request.query);
     const where = ["l.deleted_at IS NULL"];
@@ -320,6 +527,15 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
       params.push(query.direction);
     }
 
+    if (query.groupId && query.groupId !== "all") {
+      where.push("COALESCE(l.loan_group_id, CASE l.direction WHEN 'receivable' THEN ? ELSE ? END) = ?");
+      params.push(defaultReceivableGroupId, defaultPayableGroupId, query.groupId);
+    }
+
+    if (!query.includeHiddenGroups) {
+      where.push("(l.direction <> 'receivable' OR COALESCE(lg.include_in_assets, 1) = 1)");
+    }
+
     if (query.q) {
       where.push("(l.counterparty LIKE ? OR l.note LIKE ?)");
       params.push(`%${query.q}%`, `%${query.q}%`);
@@ -331,6 +547,10 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
         SELECT
           l.id,
           l.direction,
+          COALESCE(l.loan_group_id, CASE l.direction WHEN 'receivable' THEN 'loan_group_receivable_default' ELSE 'loan_group_payable_default' END) AS loanGroupId,
+          lg.name AS loanGroupName,
+          lg.color AS loanGroupColor,
+          lg.include_in_assets AS loanGroupIncludeInAssets,
           l.counterparty,
           l.principal_amount AS principalAmount,
           l.remaining_amount_cache AS remainingAmount,
@@ -346,6 +566,7 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
           l.updated_at AS updatedAt
         FROM loans l
         LEFT JOIN accounts a ON a.id = l.account_id
+        LEFT JOIN loan_groups lg ON lg.id = COALESCE(l.loan_group_id, CASE l.direction WHEN 'receivable' THEN 'loan_group_receivable_default' ELSE 'loan_group_payable_default' END)
         WHERE ${where.join(" AND ")}
         ORDER BY
           CASE l.status WHEN 'open' THEN 0 ELSE 1 END,
@@ -356,13 +577,13 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
       )
       .all(...params, query.limit) as LoanRow[];
 
-    return ok(rows);
+    return ok(rows.map(serializeLoan));
   });
 
   app.get("/:id", async (request) => {
     const params = z.object({ id: z.string() }).parse(request.params);
     const loan = requireLoan(params.id);
-    return ok({ ...loan, entries: readLoanEntries(loan.id) });
+    return ok({ ...serializeLoan(loan), entries: readLoanEntries(loan.id) });
   });
 
   app.post("/", async (request) => {
@@ -371,19 +592,20 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
     const id = createId("loan");
     const principal = toMoney(body.principalAmount);
     const accountId = validateAccount(body.accountId);
+    const loanGroupId = validateLoanGroup(body.direction, body.loanGroupId);
 
     sqlite.transaction(() => {
       sqlite
         .prepare(
           `
           INSERT INTO loans
-            (id, direction, counterparty, principal_amount, remaining_amount_cache, interest_amount_cache, account_id,
+            (id, direction, loan_group_id, counterparty, principal_amount, remaining_amount_cache, interest_amount_cache, account_id,
              happened_on, due_on, reminder_enabled, status, note, created_at, updated_at)
           VALUES
-            (?, ?, ?, ?, ?, '0.00', ?, ?, ?, 0, 'open', ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, '0.00', ?, ?, ?, 0, 'open', ?, ?, ?)
         `
         )
-        .run(id, body.direction, body.counterparty, principal, principal, accountId, body.happenedOn, body.dueOn ?? null, body.note ?? null, now, now);
+        .run(id, body.direction, loanGroupId, body.counterparty, principal, principal, accountId, body.happenedOn, body.dueOn ?? null, body.note ?? null, now, now);
 
       const loan = requireLoan(id);
       const transactionId = insertLoanTransaction({
@@ -407,7 +629,7 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
         .run(createId("loan_entry"), id, principal, accountId, body.happenedOn, body.note ?? null, transactionId, now, now);
     })();
 
-    return ok({ ...requireLoan(id), entries: readLoanEntries(id) });
+    return ok({ ...serializeLoan(requireLoan(id)), entries: readLoanEntries(id) });
   });
 
   app.put("/:id", async (request) => {
@@ -416,6 +638,12 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
     const body = updateLoanSchema.parse(request.body);
     const now = new Date().toISOString();
     const nextPrincipal = body.principalAmount === undefined ? Number(existing.principalAmount) : body.principalAmount;
+    const nextDirection = body.direction ?? existing.direction;
+    const loanGroupId = body.loanGroupId === undefined
+      ? body.direction && body.direction !== existing.direction
+        ? defaultGroupId(nextDirection)
+        : existing.loanGroupId ?? defaultGroupId(nextDirection)
+      : validateLoanGroup(nextDirection, body.loanGroupId);
     const accountId = body.accountId === undefined ? existing.accountId : validateAccount(body.accountId);
     if (!accountId) throw badRequest("请选择使用账户");
 
@@ -425,6 +653,7 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
           `
           UPDATE loans
           SET direction = ?,
+              loan_group_id = ?,
               counterparty = ?,
               account_id = ?,
               happened_on = ?,
@@ -435,7 +664,8 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
         `
         )
         .run(
-          body.direction ?? existing.direction,
+          nextDirection,
+          loanGroupId,
           body.counterparty ?? existing.counterparty,
           accountId,
           body.happenedOn ?? existing.happenedOn,
@@ -491,7 +721,7 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
       applyLoanTotals(existing.id, now);
     })();
 
-    return ok({ ...requireLoan(existing.id), entries: readLoanEntries(existing.id) });
+    return ok({ ...serializeLoan(requireLoan(existing.id)), entries: readLoanEntries(existing.id) });
   });
 
   app.delete("/:id", async (request) => {
@@ -539,7 +769,7 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
     })();
 
     const updated = requireLoan(loan.id);
-    return ok({ ...updated, entries: readLoanEntries(loan.id) });
+    return ok({ ...serializeLoan(updated), entries: readLoanEntries(loan.id) });
   });
 
   app.delete("/:id/entries/:entryId", async (request) => {
@@ -562,7 +792,7 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
       applyLoanTotals(loan.id, now);
     })();
 
-    return ok({ id: params.entryId, deleted: true, loan: requireLoan(loan.id) });
+    return ok({ id: params.entryId, deleted: true, loan: serializeLoan(requireLoan(loan.id)) });
   });
 
   app.post("/:id/close", async (request) => {
@@ -575,7 +805,7 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
     sqlite
       .prepare("UPDATE loans SET status = 'closed', remaining_amount_cache = '0.00', closed_at = ?, updated_at = ? WHERE id = ?")
       .run(now, now, loan.id);
-    return ok(requireLoan(loan.id));
+    return ok(serializeLoan(requireLoan(loan.id)));
   });
 
   app.post("/:id/reopen", async (request) => {
@@ -606,6 +836,6 @@ export const loansRoutes: FastifyPluginAsync = async (app) => {
         now,
         loan.id
       );
-    return ok(requireLoan(loan.id));
+    return ok(serializeLoan(requireLoan(loan.id)));
   });
 };

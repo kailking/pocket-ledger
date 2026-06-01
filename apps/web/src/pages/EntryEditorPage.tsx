@@ -99,7 +99,7 @@ export function EntryEditorPage() {
   const [date, setDate] = useState(() =>
     queryDate?.match(/^\d{4}-\d{2}-\d{2}$/) ? queryDate : new Date().toISOString().slice(0, 10)
   );
-  const [accountId, setAccountId] = useState(queryAccountId || "alipay");
+  const [accountId, setAccountId] = useState(queryAccountId || "cash");
   const [member, setMember] = useState("我");
   const [note, setNote] = useState("");
   const [sheet, setSheet] = useState<"date" | "account" | "member" | "note" | null>(null);
@@ -107,7 +107,7 @@ export function EntryEditorPage() {
   const [selectedExpenseId, setSelectedExpenseId] = useState("");
   const [selectedIncomeId, setSelectedIncomeId] = useState("");
   const [fromAccountId, setFromAccountId] = useState("cash");
-  const [toAccountId, setToAccountId] = useState("alipay");
+  const [toAccountId, setToAccountId] = useState("debit");
   const [accountTarget, setAccountTarget] = useState<"single" | "from" | "to">("single");
   const [loadedEditId, setLoadedEditId] = useState<string | null>(null);
 

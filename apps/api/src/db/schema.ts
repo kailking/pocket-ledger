@@ -111,6 +111,7 @@ export const loans = sqliteTable(
   {
     id: text("id").primaryKey(),
     direction: text("direction").notNull(),
+    loanGroupId: text("loan_group_id"),
     counterparty: text("counterparty").notNull(),
     principalAmount: text("principal_amount").notNull(),
     remainingAmountCache: text("remaining_amount_cache").notNull().default("0"),
@@ -128,7 +129,28 @@ export const loans = sqliteTable(
   },
   (table) => [
     index("loans_counterparty_idx").on(table.counterparty),
+    index("loans_group_idx").on(table.loanGroupId),
     index("loans_status_idx").on(table.status)
+  ]
+);
+
+export const loanGroups = sqliteTable(
+  "loan_groups",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    direction: text("direction").notNull().default("receivable"),
+    color: text("color").notNull().default("#46B98F"),
+    icon: text("icon").notNull().default("hand-coins"),
+    includeInAssets: integer("include_in_assets", { mode: "boolean" }).notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    archivedAt: text("archived_at"),
+    ...timestamps
+  },
+  (table) => [
+    index("loan_groups_direction_idx").on(table.direction),
+    uniqueIndex("loan_groups_name_direction_unique").on(table.name, table.direction)
   ]
 );
 
