@@ -13,6 +13,8 @@ const envSchema = z.object({
   ADMIN_INITIAL_PASSWORD: z.string().min(8).default(DEFAULT_ADMIN_INITIAL_PASSWORD),
   BACKUP_DIR: z.string().default("./data/backups"),
   UPLOAD_DIR: z.string().default("./data/uploads"),
+  ACCOUNT_BALANCE_SNAPSHOT_PATH: z.string().optional(),
+  APP_TIME_ZONE: z.string().min(1).default("Asia/Shanghai"),
   WEB_DIST_DIR: z.string().default("./public")
 });
 

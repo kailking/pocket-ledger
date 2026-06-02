@@ -6,9 +6,11 @@ import { Link } from "react-router-dom";
 import { queryClient } from "../app/queryClient";
 import { BottomSheet } from "../components/BottomSheet";
 import { CategoryIcon } from "../components/CategoryIcon";
+import { useCurrentDateKey } from "../hooks/useCurrentDateKey";
 import { usePullToRefresh } from "../hooks/usePullToRefresh";
 import { apiGet, apiPut } from "../lib/api";
 import { absoluteMoney, formatMoney } from "../lib/format";
+import { addDaysKey } from "../lib/localDate";
 import { getMonthSummary, type LedgerTransaction } from "../lib/ledgerStore";
 
 type BudgetInfo = {
@@ -29,11 +31,6 @@ type DayGroup = {
   transactions: LedgerTransaction[];
 };
 
-function currentMonth() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-}
-
 function getDateKey(transaction: LedgerTransaction) {
   return transaction.happenedOn.slice(0, 10);
 }
@@ -42,26 +39,12 @@ function getMonthKey(date: string) {
   return date.slice(0, 7);
 }
 
-function localDateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function addDaysKey(dateKey: string, days: number) {
-  const date = new Date(`${dateKey}T00:00:00`);
-  date.setDate(date.getDate() + days);
-  return localDateKey(date);
-}
-
 function formatMonthNode(month: string) {
   const [year, monthNumber] = month.split("-");
   return `${year}年${Number(monthNumber)}月`;
 }
 
-function formatDayNode(date: string) {
-  const todayKey = localDateKey();
+function formatDayNode(date: string, todayKey: string) {
   if (date === todayKey) return { label: "今日", special: true };
   if (date === addDaysKey(todayKey, -1)) return { label: "昨日", special: true };
 
@@ -91,7 +74,8 @@ function groupTransactionsByDay(transactions: LedgerTransaction[]) {
 }
 
 export function LedgerHome() {
-  const [selectedMonth] = useState(currentMonth);
+  const todayKey = useCurrentDateKey();
+  const selectedMonth = todayKey.slice(0, 7);
   const [headerSheet, setHeaderSheet] = useState<"book" | "budget" | null>(null);
   const [budgetDraft, setBudgetDraft] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -235,7 +219,7 @@ export function LedgerHome() {
           {dayGroups.map((group, groupIndex) => {
             const previousGroup = dayGroups[groupIndex - 1];
             const showMonthNode = !previousGroup || previousGroup.month !== group.month;
-            const dayNode = formatDayNode(group.date);
+            const dayNode = formatDayNode(group.date, todayKey);
 
             return (
               <div className="timeline-day" key={group.date}>

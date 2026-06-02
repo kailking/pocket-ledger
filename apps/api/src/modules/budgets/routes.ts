@@ -4,6 +4,7 @@ import { z } from "zod";
 import { sqlite } from "../../db/client.js";
 import { badRequest, ok } from "../../utils/http.js";
 import { createId } from "../../utils/id.js";
+import { localMonthKey, nextLocalMonthStart } from "../../utils/localDate.js";
 
 type BudgetRow = {
   id: string;
@@ -27,7 +28,7 @@ const budgetPayloadSchema = z.object({
 });
 
 function currentMonth() {
-  return new Date().toISOString().slice(0, 7);
+  return localMonthKey();
 }
 
 function assertMonth(month: string) {
@@ -56,8 +57,7 @@ function monthExpense(month: string) {
 function nextMonth(month: string) {
   const [year, monthNumber] = month.split("-").map(Number);
   if (!year || !monthNumber) throw badRequest("月份格式应为 YYYY-MM");
-  const next = new Date(Date.UTC(year, monthNumber, 1));
-  return next.toISOString().slice(0, 10);
+  return nextLocalMonthStart(month);
 }
 
 function readBudget(month: string): BudgetRow {

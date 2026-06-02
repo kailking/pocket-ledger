@@ -8,6 +8,7 @@ import { BottomSheet } from "../components/BottomSheet";
 import { ConfirmDialog, type ConfirmDialogOptions } from "../components/ConfirmDialog";
 import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
 import { formatMoney } from "../lib/format";
+import { localDateKey } from "../lib/localDate";
 import type { LedgerAccount } from "../lib/ledgerStore";
 
 type LoanStatusFilter = "open" | "closed" | "all";
@@ -100,7 +101,7 @@ const directionLabels: Record<LoanDirection, string> = {
 };
 
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return localDateKey();
 }
 
 function formatDate(value: string) {
@@ -154,7 +155,7 @@ function makeEntryDraft(type: EntryAction, accountId: string): EntryDraft {
 
 export function LoansPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [direction, setDirection] = useState<LoanDirection>("receivable");
+  const [direction, setDirection] = useState<LoanDirection>(() => (searchParams.get("direction") === "payable" ? "payable" : "receivable"));
   const [status, setStatus] = useState<LoanStatusFilter>("open");
   const [selectedGroupId, setSelectedGroupId] = useState(() => searchParams.get("groupId") ?? "all");
   const [groupPanelOpen, setGroupPanelOpen] = useState(false);
@@ -172,11 +173,16 @@ export function LoansPage() {
   const realAccounts = accounts.filter((account) => !account.virtual);
   const defaultAccountId = realAccounts[0]?.id ?? "";
   const { data: loanGroups = [] } = useQuery({
-    queryKey: ["loans", "groups", "receivable"],
+    queryKey: ["loans", "groups", direction],
+    queryFn: () => apiGet<LoanGroup[]>(`/api/loans/groups?direction=${direction}`)
+  });
+  const { data: receivableGroups = [] } = useQuery({
+    queryKey: ["loans", "groups", "receivable-summary"],
     queryFn: () => apiGet<LoanGroup[]>("/api/loans/groups?direction=receivable")
   });
   const visibleLoanGroups = useMemo(() => loanGroups.filter((group) => group.includeInAssets), [loanGroups]);
-  const hasVirtualReceivable = visibleLoanGroups.length > 0;
+  const visibleReceivableGroups = useMemo(() => receivableGroups.filter((group) => group.includeInAssets), [receivableGroups]);
+  const hasVirtualReceivable = visibleReceivableGroups.length > 0;
   const selectedLoanGroup = selectedGroupId === "all" ? null : visibleLoanGroups.find((group) => group.id === selectedGroupId) ?? null;
 
   const { data: summaryLoans = [] } = useQuery({
@@ -187,7 +193,7 @@ export function LoansPage() {
     queryKey: ["loans", status, direction, selectedGroupId],
     queryFn: () => {
       const params = new URLSearchParams({ status, direction });
-      if (direction === "receivable" && selectedGroupId !== "all") params.set("groupId", selectedGroupId);
+      if (selectedGroupId !== "all") params.set("groupId", selectedGroupId);
       return apiGet<LoanSummary[]>(`/api/loans?${params.toString()}`);
     }
   });
@@ -198,7 +204,7 @@ export function LoansPage() {
   });
 
   const summary = useMemo(() => {
-    const visibleReceivableIds = new Set(visibleLoanGroups.map((group) => group.id));
+    const visibleReceivableIds = new Set(visibleReceivableGroups.map((group) => group.id));
     return summaryLoans.reduce(
       (totals, loan) => {
         const amount = Number(loan.remainingAmount);
@@ -208,25 +214,38 @@ export function LoansPage() {
       },
       { receivable: 0, payable: 0 }
     );
-  }, [summaryLoans, visibleLoanGroups]);
+  }, [summaryLoans, visibleReceivableGroups]);
 
   const receivableHeroAmount = selectedLoanGroup ? Number(selectedLoanGroup.balance) : summary.receivable;
+  const payableHeroAmount = direction === "payable" && selectedLoanGroup ? Number(selectedLoanGroup.balance) : summary.payable;
 
   const selectGroup = useCallback(
     (groupId: string) => {
       setSelectedGroupId(groupId);
       const next = new URLSearchParams(searchParams);
+      next.set("direction", direction);
       if (groupId === "all") next.delete("groupId");
       else next.set("groupId", groupId);
       setSearchParams(next);
     },
-    [searchParams, setSearchParams]
+    [direction, searchParams, setSearchParams]
   );
 
   useEffect(() => {
     const groupId = searchParams.get("groupId") ?? "all";
+    const nextDirection = searchParams.get("direction") === "payable" ? "payable" : "receivable";
+    setDirection(nextDirection);
     setSelectedGroupId(groupId);
   }, [searchParams]);
+
+  function selectDirection(nextDirection: LoanDirection) {
+    setDirection(nextDirection);
+    const next = new URLSearchParams(searchParams);
+    next.set("direction", nextDirection);
+    next.delete("groupId");
+    setSelectedGroupId("all");
+    setSearchParams(next);
+  }
 
   useEffect(() => {
     if (selectedGroupId !== "all" && loanGroups.length > 0 && !visibleLoanGroups.some((group) => group.id === selectedGroupId)) {
@@ -426,7 +445,7 @@ export function LoansPage() {
           <div className="loan-topline">
             <div className="loan-direction-tabs">
               {(Object.keys(directionLabels) as LoanDirection[]).map((item) => (
-                <button key={item} className={direction === item ? "is-active" : ""} type="button" onClick={() => setDirection(item)}>
+                <button key={item} className={direction === item ? "is-active" : ""} type="button" onClick={() => selectDirection(item)}>
                   {directionLabels[item]}
                 </button>
               ))}
@@ -441,7 +460,7 @@ export function LoansPage() {
           </div>
           <span>{direction === "receivable" ? "应收总额" : "应付总额"}</span>
           <strong className={direction === "receivable" && !hasVirtualReceivable ? "loan-hero__amount--muted" : undefined}>
-            {direction === "receivable" && !hasVirtualReceivable ? "未启用" : `¥${formatMoney(direction === "receivable" ? receivableHeroAmount : summary.payable)}`}
+            {direction === "receivable" && !hasVirtualReceivable ? "未启用" : `¥${formatMoney(direction === "receivable" ? receivableHeroAmount : payableHeroAmount)}`}
           </strong>
           <small>
             {direction === "receivable" && !hasVirtualReceivable
@@ -662,7 +681,7 @@ export function LoansPage() {
 
             <label className="sheet-field">
               备注
-              <input value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} />
+              <textarea rows={3} value={draft.note} onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))} />
             </label>
           </div>
         </BottomSheet>
@@ -825,7 +844,11 @@ export function LoansPage() {
             </label>
             <label className="sheet-field">
               备注
-              <input value={entryDraft.note} onChange={(event) => setEntryDraft((current) => (current ? { ...current, note: event.target.value } : current))} />
+              <textarea
+                rows={3}
+                value={entryDraft.note}
+                onChange={(event) => setEntryDraft((current) => (current ? { ...current, note: event.target.value } : current))}
+              />
             </label>
           </div>
         </BottomSheet>

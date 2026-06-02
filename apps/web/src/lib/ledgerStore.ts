@@ -33,6 +33,7 @@ export interface LedgerAccount {
   includeInAssets: boolean;
   virtual?: boolean;
   loanGroupId?: string;
+  loanDirection?: "receivable" | "payable";
 }
 
 export const fallbackExpenseCategories: CategorySummary[] = [

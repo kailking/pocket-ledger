@@ -6,6 +6,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { CategoryIcon } from "../components/CategoryIcon";
 import { apiGet } from "../lib/api";
 import { absoluteMoney, formatMoney } from "../lib/format";
+import { localDateKey, localMonthStart } from "../lib/localDate";
 import type { LedgerTransaction } from "../lib/ledgerStore";
 
 type ReportType = "income" | "expense";
@@ -32,14 +33,6 @@ function validType(value: string | null): ReportType {
   return value === "income" ? "income" : "expense";
 }
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function monthStart(date = today()) {
-  return `${date.slice(0, 8)}01`;
-}
-
 function groupByDate(items: LedgerTransaction[]) {
   return items.reduce<Record<string, LedgerTransaction[]>>((groups, item) => {
     groups[item.happenedOn] = [...(groups[item.happenedOn] ?? []), item];
@@ -51,9 +44,10 @@ export function ReportCategoryDetailPage() {
   const navigate = useNavigate();
   const { categoryId = "" } = useParams();
   const [searchParams] = useSearchParams();
+  const today = localDateKey();
   const type = validType(searchParams.get("type"));
-  const from = searchParams.get("from") ?? monthStart();
-  const to = searchParams.get("to") ?? today();
+  const from = searchParams.get("from") ?? localMonthStart(today);
+  const to = searchParams.get("to") ?? today;
 
   const summaryUrl = `/api/reports/category/${categoryId}/summary?${new URLSearchParams({ type, from, to }).toString()}`;
   const transactionsUrl = `/api/transactions?${new URLSearchParams({

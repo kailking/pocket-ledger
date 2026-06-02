@@ -4,6 +4,7 @@ import { z } from "zod";
 import { sqlite } from "../../db/client.js";
 import { badRequest, notFound, ok } from "../../utils/http.js";
 import { createId } from "../../utils/id.js";
+import { localDateKey } from "../../utils/localDate.js";
 
 type LoanDirection = "receivable" | "payable";
 type LoanStatus = "open" | "closed";
@@ -99,7 +100,7 @@ const createLoanSchema = z.object({
   counterparty: z.string().trim().min(1, "请填写借贷对象"),
   principalAmount: moneySchema,
   accountId: z.string().trim().min(1, "请选择使用账户"),
-  happenedOn: isoDateSchema.default(() => new Date().toISOString().slice(0, 10)),
+  happenedOn: isoDateSchema.default(() => localDateKey()),
   dueOn: optionalText,
   note: optionalText
 });
@@ -110,7 +111,7 @@ const createEntrySchema = z.object({
   type: z.enum(["repayment", "additional", "interest"]),
   amount: moneySchema,
   accountId: z.string().trim().min(1, "请选择使用账户"),
-  happenedOn: isoDateSchema.default(() => new Date().toISOString().slice(0, 10)),
+  happenedOn: isoDateSchema.default(() => localDateKey()),
   note: optionalText
 });
 

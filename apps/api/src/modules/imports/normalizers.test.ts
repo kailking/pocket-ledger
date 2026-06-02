@@ -7,6 +7,7 @@ import {
   type ParsedLoanInput,
   type ParsedTransactionInput
 } from "./normalizers.js";
+import { importedLoanGroupForLoan } from "./loanGroupRules.js";
 
 const income = "\u6536\u5165";
 const expense = "\u652f\u51fa";
@@ -98,5 +99,15 @@ describe("import normalizers", () => {
       [3, 3, "principal", 50],
       [3, 4, "repayment", 20]
     ]);
+  });
+
+  it("maps 2026 imported loans into separate project loan groups", () => {
+    const result = rebuildLoanRecords([
+      { rowNumber: 2, happenedOn: "2025-12-31", loanType: loanOut, counterparty: "Old", amount: 500, interest: 0, account: "cash", book: "default", note: "", raw: {} },
+      { rowNumber: 3, happenedOn: "2026-03-21", loanType: loanOut, counterparty: "Project", amount: 1000, interest: 0, account: "cash", book: "default", note: "", raw: {} },
+      { rowNumber: 4, happenedOn: "2026-04-28", loanType: loanIn, counterparty: "Lender", amount: 420, interest: 0, account: "cash", book: "default", note: "专项资金", raw: {} }
+    ]);
+
+    expect(result.loans.map((loan) => importedLoanGroupForLoan(loan).name)).toEqual(["应收账", "专项借出", "专项借入"]);
   });
 });

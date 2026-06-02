@@ -14,6 +14,8 @@ build
 /screenshots
 /screenshots2
 /screenshots3
+/screenshots4
+/screenshots5
 /imports
 /data
 /backups
@@ -24,7 +26,10 @@ build
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.xls
+*.xlsx
 *.log
 *.tar
 *.tar.gz
+*.zip
 -

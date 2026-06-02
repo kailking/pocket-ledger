@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { sqlite } from "../../db/client.js";
 import { badRequest, notFound, ok } from "../../utils/http.js";
+import { currentLocalYear } from "../../utils/localDate.js";
 
 type ReportType = "income" | "expense";
 
@@ -68,11 +69,11 @@ const rangeQuerySchema = z
   }));
 
 const trendQuerySchema = z.object({
-  year: yearSchema.default(() => new Date().getFullYear())
+  year: yearSchema.default(() => currentLocalYear())
 });
 
 const compareQuerySchema = z.object({
-  year: yearSchema.default(() => new Date().getFullYear()),
+  year: yearSchema.default(() => currentLocalYear()),
   type: reportTypeSchema.default("expense")
 });
 

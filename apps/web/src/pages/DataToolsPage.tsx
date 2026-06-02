@@ -58,6 +58,19 @@ function buildFormData(file: File) {
   return form;
 }
 
+function formatBackupDateTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(value));
+}
+
 function invalidateDataQueries() {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: ["transactions"] }),
@@ -290,7 +303,7 @@ export function DataToolsPage() {
               {backupsQuery.data.map((item) => (
                 <article key={item.id}>
                   <strong>{item.fileName}</strong>
-                  <span>{new Date(item.createdAt).toLocaleString()}</span>
+                  <span>{formatBackupDateTime(item.createdAt)}</span>
                   <b>{formatMoney(item.sizeBytes / 1024)} KB</b>
                   <div className="data-actions">
                     <a className="secondary-action" href={item.downloadPath}>

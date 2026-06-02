@@ -15,8 +15,10 @@ import { Link } from "react-router-dom";
 
 import { queryClient } from "../app/queryClient";
 import { BottomSheet } from "../components/BottomSheet";
+import { useCurrentDateKey } from "../hooks/useCurrentDateKey";
 import { apiGet, apiPut } from "../lib/api";
 import { formatMoney } from "../lib/format";
+import { localMonthKey, parseDateKey } from "../lib/localDate";
 
 type MenuSheet = "backupSchedule" | "budget" | "settings";
 type MenuItem =
@@ -60,37 +62,32 @@ type TransactionStats = {
   transactionCount: number;
 };
 
-function localDateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function parseDateKey(dateKey: string) {
-  const [year, month, day] = dateKey.split("-").map(Number);
-  return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
-}
-
 function daysInclusive(from: string, to: string) {
   const dayMs = 24 * 60 * 60 * 1000;
   const diff = parseDateKey(to).getTime() - parseDateKey(from).getTime();
   return Math.max(1, Math.floor(diff / dayMs) + 1);
 }
 
-function msUntilTomorrow() {
-  const now = new Date();
-  const tomorrow = new Date(now);
-  tomorrow.setHours(24, 0, 1, 0);
-  return tomorrow.getTime() - now.getTime();
+function formatDateTime(value: string | null | undefined, fallback: string) {
+  if (!value) return fallback;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(new Date(value));
 }
 
 export function MorePage() {
   const [sheet, setSheet] = useState<MenuSheet | null>(null);
-  const [budgetMonth, setBudgetMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [budgetMonth, setBudgetMonth] = useState(() => localMonthKey());
   const [budgetDraft, setBudgetDraft] = useState("");
   const [scheduleDraft, setScheduleDraft] = useState<BackupSchedule>({ enabled: false, frequency: "daily" });
-  const [todayKey, setTodayKey] = useState(localDateKey);
+  const todayKey = useCurrentDateKey();
 
   const { data: stats } = useQuery({
     queryKey: ["transactions", "stats"],
@@ -132,11 +129,6 @@ export function MorePage() {
       setSheet(null);
     }
   });
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setTodayKey(localDateKey()), msUntilTomorrow());
-    return () => window.clearTimeout(timer);
-  }, [todayKey]);
 
   useEffect(() => {
     if (sheet === "budget" && budget) setBudgetDraft(budget.totalAmount);
@@ -233,9 +225,9 @@ export function MorePage() {
             </label>
             <div className="backup-schedule-meta">
               <span>上次执行</span>
-              <strong>{scheduleDraft.lastRunAt ?? "暂无"}</strong>
+              <strong>{formatDateTime(scheduleDraft.lastRunAt, "暂无")}</strong>
               <span>下次执行</span>
-              <strong>{scheduleDraft.nextRunAt ?? "待计算"}</strong>
+              <strong>{formatDateTime(scheduleDraft.nextRunAt, "待计算")}</strong>
             </div>
           </div>
         </BottomSheet>

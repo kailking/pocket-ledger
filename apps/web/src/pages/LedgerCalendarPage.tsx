@@ -4,8 +4,10 @@ import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, Plus } from "lucide-
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { CategoryIcon } from "../components/CategoryIcon";
+import { useCurrentDateKey } from "../hooks/useCurrentDateKey";
 import { apiGet } from "../lib/api";
 import { absoluteMoney, formatMoney } from "../lib/format";
+import { isDateKey, isMonthKey, localMonthEnd, shiftMonthKey } from "../lib/localDate";
 import type { LedgerTransaction } from "../lib/ledgerStore";
 
 type BudgetInfo = {
@@ -27,45 +29,18 @@ type CalendarDay = {
 
 const weekdays = ["一", "二", "三", "四", "五", "六", "日"];
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function currentMonth() {
-  return today().slice(0, 7);
-}
-
-function isMonth(value: string | null): value is string {
-  return Boolean(value?.match(/^\d{4}-\d{2}$/));
-}
-
-function isDate(value: string | null): value is string {
-  return Boolean(value?.match(/^\d{4}-\d{2}-\d{2}$/));
-}
-
-function monthEnd(month: string) {
-  const [year, monthNumber] = month.split("-").map(Number);
-  return new Date(Date.UTC(year ?? 1970, monthNumber ?? 1, 0)).toISOString().slice(0, 10);
-}
-
 function daysInMonth(month: string) {
-  return Number(monthEnd(month).slice(8, 10));
+  return Number(localMonthEnd(month).slice(8, 10));
 }
 
 function firstWeekdayOffset(month: string) {
   const [year, monthNumber] = month.split("-").map(Number);
-  const weekday = new Date(Date.UTC(year ?? 1970, (monthNumber ?? 1) - 1, 1)).getUTCDay();
+  const weekday = new Date(year ?? 1970, (monthNumber ?? 1) - 1, 1).getDay();
   return weekday === 0 ? 6 : weekday - 1;
 }
 
 function monthLabel(month: string) {
   return `${month.slice(0, 4)}年${Number(month.slice(5, 7))}月`;
-}
-
-function shiftMonth(month: string, delta: number) {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const next = new Date(Date.UTC(year ?? 1970, (monthNumber ?? 1) - 1 + delta, 1));
-  return next.toISOString().slice(0, 7);
 }
 
 function displayAmount(item: LedgerTransaction) {
@@ -76,16 +51,18 @@ function displayAmount(item: LedgerTransaction) {
 export function LedgerCalendarPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const todayKey = useCurrentDateKey();
+  const currentMonthKey = todayKey.slice(0, 7);
   const monthParam = searchParams.get("month");
   const dateParam = searchParams.get("date");
-  const month = isMonth(monthParam) ? monthParam : currentMonth();
+  const month = isMonthKey(monthParam) ? monthParam : currentMonthKey;
   const firstDate = `${month}-01`;
-  const selectedDate = isDate(dateParam) && dateParam.startsWith(month)
+  const selectedDate = isDateKey(dateParam) && dateParam.startsWith(month)
     ? dateParam
-    : month === currentMonth()
-      ? today()
+    : month === currentMonthKey
+      ? todayKey
       : firstDate;
-  const endDate = monthEnd(month);
+  const endDate = localMonthEnd(month);
   const { data: transactions = [], isLoading, isError, refetch } = useQuery({
     queryKey: ["transactions", "calendar", month],
     queryFn: () => apiGet<LedgerTransaction[]>(`/api/transactions?startDate=${firstDate}&endDate=${endDate}&limit=500`)
@@ -137,14 +114,14 @@ export function LedgerCalendarPage() {
           返回
         </button>
         <div className="calendar-topbar__title">
-          <button type="button" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="上个月">
+          <button type="button" onClick={() => setMonth(shiftMonthKey(month, -1))} aria-label="上个月">
             <ChevronLeft aria-hidden="true" />
           </button>
           <strong>
             {monthLabel(month)}
             <ChevronDown aria-hidden="true" />
           </strong>
-          <button type="button" onClick={() => setMonth(shiftMonth(month, 1))} aria-label="下个月">
+          <button type="button" onClick={() => setMonth(shiftMonthKey(month, 1))} aria-label="下个月">
             <ChevronRight aria-hidden="true" />
           </button>
         </div>

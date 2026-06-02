@@ -231,7 +231,66 @@ describe("asset preferences and data safety", () => {
     expect((loans.json().data as Array<{ id: string }>).map((loan) => loan.id)).toEqual(["loan_project_group"]);
   });
 
+  test("payable loan groups produce virtual liability accounts", async () => {
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    sqlite
+      .prepare(
+        `INSERT INTO loan_groups
+          (id, name, direction, color, icon, include_in_assets, sort_order, is_default, created_at, updated_at)
+         VALUES
+          ('loan_group_payable_project', 'Project Payable', 'payable', '#6F8FE8', 'receipt-text', 1, 20, 0, ?, ?)`
+      )
+      .run(createdAt, createdAt);
+    sqlite
+      .prepare(
+        `INSERT INTO loans
+          (id, direction, loan_group_id, counterparty, principal_amount, remaining_amount_cache, interest_amount_cache, account_id,
+           happened_on, status, created_at, updated_at)
+         VALUES
+          ('loan_payable_project', 'payable', 'loan_group_payable_project', 'Project Lender', '420.00', '420.00', '0.00', 'cash',
+           '2026-01-01', 'open', ?, ?)`
+      )
+      .run(createdAt, createdAt);
+
+    const accounts = await app.inject({
+      method: "GET",
+      url: "/api/accounts?includeVirtual=true",
+      headers: { cookie }
+    });
+    expect(accounts.statusCode).toBe(200);
+    expect(accounts.json().data).toContainEqual(
+      expect.objectContaining({
+        id: "virtual_payable:loan_group_payable_project",
+        loanGroupId: "loan_group_payable_project",
+        loanDirection: "payable",
+        kind: "liability",
+        name: "Project Payable",
+        balance: "420.00",
+        includeInAssets: true,
+        virtual: true
+      })
+    );
+  });
+
   test("backup schedule can be saved and clear-all requires multiple confirmations with safety backup", async () => {
+    const { backupCreatedAt, backupTimestampPart } = await import("../modules/backups/routes.js");
+    expect(backupTimestampPart(new Date("2026-06-01T00:03:04.000Z"), "Asia/Shanghai")).toBe("20260601-080304");
+    expect(
+      backupCreatedAt({
+        birthtime: new Date("1970-01-01T00:00:00.000Z"),
+        mtime: new Date("2026-06-01T09:53:14.000+08:00")
+      })
+    ).toBe("2026-06-01T01:53:14.000Z");
+
+    const manualBackup = await app.inject({
+      method: "POST",
+      url: "/api/backups/create",
+      headers: { cookie },
+      payload: {}
+    });
+    expect(manualBackup.statusCode).toBe(201);
+    expect(manualBackup.json().data.fileName).toMatch(/^pocket-ledger-\d{8}-\d{6}\.db$/);
+
     const schedule = await app.inject({
       method: "PUT",
       url: "/api/backups/schedule",

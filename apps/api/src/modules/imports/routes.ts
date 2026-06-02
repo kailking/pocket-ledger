@@ -7,8 +7,10 @@ import * as XLSX from "@e965/xlsx";
 import { z } from "zod";
 
 import { sqlite, sqliteFilePath } from "../../db/client.js";
+import { env } from "../../config/env.js";
 import { createId } from "../../utils/id.js";
 import { ok } from "../../utils/http.js";
+import { localDateKey } from "../../utils/localDate.js";
 import {
   collectCategoryKeys,
   rebuildLoanRecords,
@@ -17,6 +19,7 @@ import {
   type RebuiltLoan,
   type RebuiltLoanEntry
 } from "./normalizers.js";
+import { defaultPayableGroupId, defaultReceivableGroupId, importedLoanGroupForLoan } from "./loanGroupRules.js";
 import { auditImportedData, repairImportedData } from "./repair.js";
 
 type RawRow = Record<string, unknown>;
@@ -63,8 +66,37 @@ type PocketWorkbook = {
   summary: ImportSummary;
 };
 
-const defaultReceivableGroupId = "loan_group_receivable_default";
-const defaultPayableGroupId = "loan_group_payable_default";
+type AccountDefaults = {
+  type: string;
+  kind: "asset" | "liability";
+  color: string;
+  icon: string;
+};
+
+type AccountBalanceSnapshotEntry = {
+  name: string;
+  balance: number;
+  type?: string;
+  kind?: "asset" | "liability";
+  includeInAssets?: boolean;
+  color?: string;
+  icon?: string;
+};
+
+type LoanGroupSnapshotEntry = {
+  name: string;
+  direction: "receivable" | "payable";
+  sortOrder?: number;
+  includeInAssets?: boolean;
+  color?: string;
+  icon?: string;
+};
+
+type AccountBalanceSnapshot = {
+  hideMissing?: boolean;
+  accounts: AccountBalanceSnapshotEntry[];
+  loanGroups?: LoanGroupSnapshotEntry[];
+};
 
 function ensureDefaultLoanGroups(created = new Date().toISOString()) {
   const insert = sqlite.prepare(`
@@ -77,8 +109,34 @@ function ensureDefaultLoanGroups(created = new Date().toISOString()) {
   insert.run(defaultPayableGroupId, "应付账", "payable", "#C86464", "receipt-text", 0, 10, created, created);
 }
 
-function defaultLoanGroupId(direction: "receivable" | "payable") {
-  return direction === "receivable" ? defaultReceivableGroupId : defaultPayableGroupId;
+function ensureImportedLoanGroup(loan: RebuiltLoan, created: string) {
+  const group = importedLoanGroupForLoan(loan);
+  if (group.id === defaultReceivableGroupId || group.id === defaultPayableGroupId) return group.id;
+  const existing = sqlite
+    .prepare("SELECT id FROM loan_groups WHERE name = ? AND direction = ? AND archived_at IS NULL LIMIT 1")
+    .get(group.name, group.direction) as { id: string } | undefined;
+  if (existing) {
+    sqlite
+      .prepare("UPDATE loan_groups SET color = ?, icon = ?, include_in_assets = ?, sort_order = ?, updated_at = ? WHERE id = ?")
+      .run(group.color, group.icon, group.includeInAssets, group.sortOrder, created, existing.id);
+    return existing.id;
+  }
+
+  sqlite
+    .prepare(
+      `
+      INSERT OR IGNORE INTO loan_groups
+        (id, name, direction, color, icon, include_in_assets, sort_order, is_default, created_at, updated_at)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `
+    )
+    .run(group.id, group.name, group.direction, group.color, group.icon, group.includeInAssets, group.sortOrder, created, created);
+
+  const row = sqlite
+    .prepare("SELECT id FROM loan_groups WHERE name = ? AND direction = ? AND archived_at IS NULL LIMIT 1")
+    .get(group.name, group.direction) as { id: string } | undefined;
+  return row?.id ?? group.id;
 }
 
 type ImportSummary = {
@@ -138,6 +196,10 @@ function stableId(prefix: string, value: string): string {
   return `${prefix}_${crypto.createHash("sha1").update(value).digest("hex").slice(0, 16)}`;
 }
 
+function accountIdentity(name: string, defaults: Pick<AccountDefaults, "type" | "kind">) {
+  return `${name}:${defaults.type}:${defaults.kind}`;
+}
+
 function rowHash(sheetName: string, rowNumber: number, row: RawRow): string {
   return crypto
     .createHash("sha1")
@@ -147,7 +209,7 @@ function rowHash(sheetName: string, rowNumber: number, row: RawRow): string {
 
 function normalizeDate(value: unknown): string | null {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.toISOString().slice(0, 10);
+    return localDateKey(value);
   }
 
   const raw = text(value).replace(/\//g, "-");
@@ -183,6 +245,76 @@ function accountTypeFromPocket(value: string): string {
 
 function accountKindFromPocket(value: string): "asset" | "liability" {
   return value.includes("信用") || value.includes("花呗") || value.includes("白条") ? "liability" : "asset";
+}
+
+function accountDefaultsFromPocket(name: string, typeName = "", index = 0): AccountDefaults {
+  const hint = `${typeName}${name}`;
+  const type = accountTypeFromPocket(hint);
+  return {
+    type,
+    kind: accountKindFromPocket(hint),
+    color: `hsl(${(index * 47) % 360} 56% 58%)`,
+    icon: type === "cash" ? "badge-yen-sign" : type === "credit_card" ? "landmark" : "wallet"
+  };
+}
+
+function snapshotPath() {
+  return env.ACCOUNT_BALANCE_SNAPSHOT_PATH || path.join(path.dirname(sqliteFilePath), "account-balances.json");
+}
+
+function readAccountBalanceSnapshot(): AccountBalanceSnapshot | null {
+  const filePath = snapshotPath();
+  if (!fs.existsSync(filePath)) return null;
+
+  const raw = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<AccountBalanceSnapshot>;
+  if (!Array.isArray(raw.accounts)) return null;
+
+  const accounts = raw.accounts.flatMap((entry) => {
+    if (!entry || typeof entry.name !== "string" || !entry.name.trim()) return [];
+    const balance = Number(entry.balance);
+    if (!Number.isFinite(balance)) return [];
+    const kind = entry.kind === "liability" ? "liability" : entry.kind === "asset" ? "asset" : undefined;
+    const normalized: AccountBalanceSnapshotEntry = {
+      name: entry.name.trim(),
+      balance
+    };
+    if (typeof entry.type === "string" && entry.type.trim()) normalized.type = entry.type.trim();
+    if (kind) normalized.kind = kind;
+    if (typeof entry.includeInAssets === "boolean") normalized.includeInAssets = entry.includeInAssets;
+    if (typeof entry.color === "string" && entry.color.trim()) normalized.color = entry.color.trim();
+    if (typeof entry.icon === "string" && entry.icon.trim()) normalized.icon = entry.icon.trim();
+    return [normalized];
+  });
+
+  const loanGroups = Array.isArray(raw.loanGroups)
+    ? raw.loanGroups.flatMap((entry) => {
+        if (!entry || typeof entry.name !== "string" || !entry.name.trim()) return [];
+        const direction = entry.direction === "payable" ? "payable" : entry.direction === "receivable" ? "receivable" : null;
+        if (!direction) return [];
+        const normalized: LoanGroupSnapshotEntry = {
+          name: entry.name.trim(),
+          direction
+        };
+        const sortOrder = Number(entry.sortOrder);
+        if (Number.isFinite(sortOrder)) normalized.sortOrder = sortOrder;
+        if (typeof entry.includeInAssets === "boolean") normalized.includeInAssets = entry.includeInAssets;
+        if (typeof entry.color === "string" && entry.color.trim()) normalized.color = entry.color.trim();
+        if (typeof entry.icon === "string" && entry.icon.trim()) normalized.icon = entry.icon.trim();
+        return [normalized];
+      })
+    : [];
+
+  return { hideMissing: raw.hideMissing === true, accounts, loanGroups };
+}
+
+function snapshotAccountDefaults(entry: AccountBalanceSnapshotEntry, index: number): AccountDefaults {
+  const inferred = accountDefaultsFromPocket(entry.name, entry.type ?? "", index);
+  return {
+    type: entry.type ?? inferred.type,
+    kind: entry.kind ?? inferred.kind,
+    color: entry.color ?? inferred.color,
+    icon: entry.icon ?? inferred.icon
+  };
 }
 
 function categoryIcon(name: string): string {
@@ -363,20 +495,23 @@ function upsertDimensionData(parsed: PocketWorkbook, created: string) {
   });
   insertBook.run("default", "默认账本", 1, created, created);
 
-  const accounts = new Map<string, string>();
-  parsed.transactions.forEach((row) => {
-    if (!accounts.has(row.account)) accounts.set(row.account, row.accountType);
+  const accounts = new Map<string, { name: string; typeName: string }>();
+  parsed.transactions.forEach((row, index) => {
+    const defaults = accountDefaultsFromPocket(row.account, row.accountType, index);
+    const key = accountIdentity(row.account, defaults);
+    if (!accounts.has(key)) accounts.set(key, { name: row.account, typeName: row.accountType });
   });
-  parsed.loans.forEach((row) => {
-    if (row.account && !accounts.has(row.account)) accounts.set(row.account, "");
+  parsed.loans.forEach((row, index) => {
+    if (!row.account) return;
+    const defaults = accountDefaultsFromPocket(row.account, "", parsed.transactions.length + index);
+    const key = accountIdentity(row.account, defaults);
+    if (!accounts.has(key)) accounts.set(key, { name: row.account, typeName: "" });
   });
-  Array.from(accounts.entries()).forEach(([name, typeName], index) => {
-    const hue = (index * 47) % 360;
+  Array.from(accounts.values()).forEach(({ name, typeName }, index) => {
+    const defaults = accountDefaultsFromPocket(name, typeName, index);
     getActiveAccountId(name, created, {
-      type: accountTypeFromPocket(`${typeName}${name}`),
-      kind: accountKindFromPocket(`${typeName}${name}`),
-      color: `hsl(${hue} 56% 58%)`,
-      icon: accountTypeFromPocket(`${typeName}${name}`) === "cash" ? "badge-yen-sign" : "wallet"
+      ...defaults,
+      color: defaults.color
     });
   });
 
@@ -414,16 +549,26 @@ function getId(table: "accounts" | "categories" | "books" | "members", name: str
 function getActiveAccountId(
   name: string,
   created?: string,
-  defaults?: { type: string; kind: "asset" | "liability"; color: string; icon: string }
+  defaults?: AccountDefaults
 ): string | null {
   if (!name) return null;
-  const existing = sqlite
-    .prepare("SELECT id FROM accounts WHERE name = ? AND archived_at IS NULL AND hidden = 0 LIMIT 1")
-    .get(name) as { id: string } | undefined;
-  if (existing || !created || !defaults) return existing?.id ?? null;
+  if (defaults) {
+    const matching = sqlite
+      .prepare("SELECT id FROM accounts WHERE name = ? AND type = ? AND kind = ? AND archived_at IS NULL AND hidden = 0 LIMIT 1")
+      .get(name, defaults.type, defaults.kind) as { id: string } | undefined;
+    if (matching) return matching.id;
+  }
+  if (!defaults) {
+    const existing = sqlite
+      .prepare("SELECT id FROM accounts WHERE name = ? AND archived_at IS NULL AND hidden = 0 LIMIT 1")
+      .get(name) as { id: string } | undefined;
+    return existing?.id ?? null;
+  }
+  if (!created) return null;
 
-  const preferredId = stableId("acct", name);
-  const fallbackId = stableId("acct_active", name);
+  const identity = accountIdentity(name, defaults);
+  const preferredId = stableId("acct", identity);
+  const fallbackId = stableId("acct_active", `${identity}:${created}`);
   for (const id of [preferredId, fallbackId]) {
     sqlite
       .prepare(
@@ -436,8 +581,8 @@ function getActiveAccountId(
       )
       .run(id, name, defaults.type, defaults.kind, defaults.color, defaults.icon, created, created);
     const inserted = sqlite
-      .prepare("SELECT id FROM accounts WHERE name = ? AND archived_at IS NULL AND hidden = 0 LIMIT 1")
-      .get(name) as { id: string } | undefined;
+      .prepare("SELECT id FROM accounts WHERE name = ? AND type = ? AND kind = ? AND archived_at IS NULL AND hidden = 0 LIMIT 1")
+      .get(name, defaults.type, defaults.kind) as { id: string } | undefined;
     if (inserted) return inserted.id;
   }
   return null;
@@ -471,6 +616,93 @@ function getCategoryId(
     .prepare("SELECT id FROM categories WHERE name = ? AND type = ? AND archived_at IS NULL AND hidden = 0 LIMIT 1")
     .get(name, type) as { id: string } | undefined;
   return inserted?.id ?? id;
+}
+
+function transactionDeltaForAccount(accountId: string) {
+  const row = sqlite
+    .prepare("SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) AS delta FROM transactions WHERE account_id = ? AND deleted_at IS NULL")
+    .get(accountId) as { delta: number | null };
+  return Number(row.delta ?? 0);
+}
+
+function applyLoanGroupSnapshot(entries: LoanGroupSnapshotEntry[], updatedAt: string) {
+  if (entries.length === 0) return;
+  const updateGroup = sqlite.prepare(`
+    UPDATE loan_groups
+    SET sort_order = COALESCE(?, sort_order),
+        include_in_assets = COALESCE(?, include_in_assets),
+        color = COALESCE(?, color),
+        icon = COALESCE(?, icon),
+        updated_at = ?
+    WHERE name = ? AND direction = ? AND archived_at IS NULL
+  `);
+  entries.forEach((entry) => {
+    updateGroup.run(
+      entry.sortOrder ?? null,
+      entry.includeInAssets === undefined ? null : entry.includeInAssets ? 1 : 0,
+      entry.color ?? null,
+      entry.icon ?? null,
+      updatedAt,
+      entry.name,
+      entry.direction
+    );
+  });
+}
+
+function applyAccountBalanceSnapshot(created: string) {
+  const snapshot = readAccountBalanceSnapshot();
+  if (!snapshot || snapshot.accounts.length === 0) return { applied: 0, path: null as string | null };
+
+  applyLoanGroupSnapshot(snapshot.loanGroups ?? [], created);
+
+  const visibleIds = new Set<string>();
+  const updateAccount = sqlite.prepare(`
+    UPDATE accounts
+    SET type = ?,
+        kind = ?,
+        initial_balance = ?,
+        current_balance_cache = ?,
+        color = ?,
+        icon = ?,
+        include_in_assets = ?,
+        sort_order = ?,
+        hidden = 0,
+        archived_at = NULL,
+        updated_at = ?
+    WHERE id = ?
+  `);
+
+  snapshot.accounts.forEach((entry, index) => {
+    const defaults = snapshotAccountDefaults(entry, index);
+    const accountId = getActiveAccountId(entry.name, created, defaults);
+    if (!accountId) return;
+    const targetBalance = Number(entry.balance);
+    const initialBalance = targetBalance - transactionDeltaForAccount(accountId);
+    const includeInAssets = entry.includeInAssets === false ? 0 : 1;
+    updateAccount.run(
+      defaults.type,
+      defaults.kind,
+      initialBalance.toFixed(2),
+      initialBalance.toFixed(2),
+      defaults.color,
+      defaults.icon,
+      includeInAssets,
+      (index + 1) * 10,
+      created,
+      accountId
+    );
+    visibleIds.add(accountId);
+  });
+
+  if (snapshot.hideMissing && visibleIds.size > 0) {
+    const rows = sqlite.prepare("SELECT id FROM accounts WHERE archived_at IS NULL").all() as Array<{ id: string }>;
+    const hideAccount = sqlite.prepare("UPDATE accounts SET include_in_assets = 0, hidden = 1, updated_at = ? WHERE id = ?");
+    rows.forEach((row) => {
+      if (!visibleIds.has(row.id)) hideAccount.run(created, row.id);
+    });
+  }
+
+  return { applied: visibleIds.size, path: snapshotPath() };
 }
 
 function clearImportedData() {
@@ -521,7 +753,7 @@ function insertTransactions(parsed: PocketWorkbook, batchId: string, created: st
   ordinaryRows.forEach((row) => {
     const type = resolveTransactionKind(row);
     if (type !== "income" && type !== "expense" && type !== "balance_adjustment") return;
-    const accountId = getActiveAccountId(row.account);
+    const accountId = getActiveAccountId(row.account, undefined, accountDefaultsFromPocket(row.account, row.accountType));
     const categoryId = type === "income" || type === "expense" ? getCategoryId(row.category, type, created, {
       icon: categoryIcon(row.category),
       color: "#8FD8F7",
@@ -589,8 +821,8 @@ function insertTransfers(
       const incoming = group.positive[index];
       const outgoing = group.negative[index];
       if (!incoming || !outgoing) continue;
-      const fromAccountId = getActiveAccountId(outgoing.account);
-      const toAccountId = getActiveAccountId(incoming.account);
+      const fromAccountId = getActiveAccountId(outgoing.account, undefined, accountDefaultsFromPocket(outgoing.account, outgoing.accountType));
+      const toAccountId = getActiveAccountId(incoming.account, undefined, accountDefaultsFromPocket(incoming.account, incoming.accountType));
       const bookId = getId("books", outgoing.book || incoming.book, "default");
       if (!fromAccountId || !toAccountId || !bookId || fromAccountId === toAccountId) {
         warnings.push({ sheetName: "收支记录", rowNumber: outgoing.rowNumber, level: "warning", message: "转账无法配对，已跳过", raw: outgoing.raw });
@@ -692,11 +924,12 @@ function insertLoans(parsed: PocketWorkbook, batchId: string, created: string) {
 
   rebuilt.loans.forEach((loan) => {
     const loanId = stableId("loan", rowHash("借入借出", loan.sourceRowNumber, loan.raw));
-    const accountId = getActiveAccountId(loan.account);
+    const accountId = getActiveAccountId(loan.account, undefined, accountDefaultsFromPocket(loan.account));
+    const loanGroupId = ensureImportedLoanGroup(loan, created);
     insertLoan.run(
       loanId,
       loan.direction,
-      defaultLoanGroupId(loan.direction),
+      loanGroupId,
       loan.counterparty,
       loan.principalAmount.toFixed(2),
       loan.remainingAmount.toFixed(2),
@@ -711,7 +944,7 @@ function insertLoans(parsed: PocketWorkbook, batchId: string, created: string) {
     );
 
     loan.entries.forEach((entry, index) => {
-      const entryAccountId = getActiveAccountId(entry.account);
+      const entryAccountId = getActiveAccountId(entry.account, undefined, accountDefaultsFromPocket(entry.account));
       const bookId = getId("books", entry.book, "default");
       let transactionId: string | null = null;
       const sourceHash = rowHash("借入借出", entry.sourceRowNumber, entry.raw);
@@ -766,12 +999,14 @@ function commitImport(fileName: string, fileHash: string, parsed: PocketWorkbook
   const batchId = createId("imp");
   let rowsSuccess = 0;
   let rowsWarning = parsed.warnings.length;
+  let accountSnapshot: ReturnType<typeof applyAccountBalanceSnapshot> = { applied: 0, path: null };
 
   sqlite.transaction(() => {
     if (mode === "clear") clearImportedData();
     upsertDimensionData(parsed, created);
     const transactionResult = insertTransactions(parsed, batchId, created);
     const loanResult = insertLoans(parsed, batchId, created);
+    if (mode === "clear") accountSnapshot = applyAccountBalanceSnapshot(created);
     rowsSuccess = transactionResult.inserted + loanResult.inserted;
     rowsWarning += transactionResult.warnings + loanResult.warnings.length;
 
@@ -799,7 +1034,7 @@ function commitImport(fileName: string, fileHash: string, parsed: PocketWorkbook
       );
   })();
 
-  return { id: batchId, rowsSuccess, rowsWarning, summary: parsed.summary };
+  return { id: batchId, rowsSuccess, rowsWarning, summary: parsed.summary, accountSnapshot };
 }
 
 function createRepairBackup() {

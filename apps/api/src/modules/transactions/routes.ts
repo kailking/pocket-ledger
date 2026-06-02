@@ -4,6 +4,7 @@ import { z } from "zod";
 import { sqlite } from "../../db/client.js";
 import { createId } from "../../utils/id.js";
 import { badRequest, notFound, ok } from "../../utils/http.js";
+import { localDateKey } from "../../utils/localDate.js";
 
 type EditableTransactionType = "income" | "expense";
 type StoredTransactionType = EditableTransactionType | "balance_adjustment" | "loan";
@@ -116,7 +117,7 @@ type UpdateTransactionPayload = z.infer<typeof updateTransactionSchema>;
 type ListQuery = z.infer<typeof listQuerySchema>;
 
 function dateLabel(date: string): string {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateKey();
   if (date === today) return "今天";
   return `${Number(date.slice(8, 10))}日`;
 }

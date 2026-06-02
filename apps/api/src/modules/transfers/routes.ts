@@ -4,6 +4,7 @@ import { z } from "zod";
 import { sqlite } from "../../db/client.js";
 import { badRequest, notFound, ok } from "../../utils/http.js";
 import { createId } from "../../utils/id.js";
+import { localDateKey } from "../../utils/localDate.js";
 
 type TransferRow = {
   id: string;
@@ -32,7 +33,7 @@ const transferBodySchema = z.object({
   amount: z.coerce.number().finite().positive("金额必须大于 0"),
   fromAccountId: z.string().trim().min(1, "请选择转出账户"),
   toAccountId: z.string().trim().min(1, "请选择转入账户"),
-  happenedOn: isoDateSchema.default(() => new Date().toISOString().slice(0, 10)),
+  happenedOn: isoDateSchema.default(() => localDateKey()),
   note: optionalText,
   memberId: optionalText,
   bookId: optionalText

@@ -111,6 +111,56 @@ describe("QA invariants", () => {
     expect(statement.json().data.account.id).toBe(accountId);
   });
 
+  test("visible account statements include same-name hidden imported history", async () => {
+    const now = "2026-06-01T00:00:00.000Z";
+    sqlite
+      .prepare(
+        `
+        INSERT INTO accounts
+          (id, name, type, kind, initial_balance, current_balance_cache, color, icon, include_in_assets, sort_order, hidden, created_at, updated_at)
+        VALUES
+          ('qa_visible_history', 'QA merged history', 'investment', 'asset', '120.00', '120.00', '#5B7CFA', 'wallet', 1, 9000, 0, ?, ?),
+          ('qa_hidden_history_a', 'QA merged history', 'cash', 'asset', '0.00', '0.00', '#5B7CFA', 'wallet', 0, 0, 1, ?, ?),
+          ('qa_hidden_history_b', 'QA merged history', 'custom', 'asset', '0.00', '0.00', '#5B7CFA', 'wallet', 0, 0, 1, ?, ?)
+      `
+      )
+      .run(now, now, now, now, now, now);
+    sqlite
+      .prepare(
+        `
+        INSERT INTO transactions
+          (id, type, happened_on, amount, display_amount, account_id, category_id, book_id, member_id, note, created_at, updated_at)
+        VALUES
+          ('qa_hidden_history_income', 'income', '2026-05-02', '50.00', '50.00', 'qa_hidden_history_a', 'salary', 'default', NULL, 'hidden income', ?, ?),
+          ('qa_hidden_history_expense', 'expense', '2026-05-03', '-20.00', '20.00', 'qa_hidden_history_b', 'general', 'default', NULL, 'hidden expense', ?, ?)
+      `
+      )
+      .run(now, now, now, now);
+
+    const statement = await app.inject({
+      method: "GET",
+      url: "/api/accounts/qa_visible_history/statement?year=2026",
+      headers: { cookie }
+    });
+
+    expect(statement.statusCode).toBe(200);
+    const data = statement.json().data as {
+      account: { id: string; balance: string };
+      totals: { inflow: string; outflow: string; net: string };
+      months: Array<{ month: string; count: number; transactions: Array<{ id: string; runningBalance: string }> }>;
+    };
+    expect(data.account.id).toBe("qa_visible_history");
+    expect(data.account.balance).toBe("120.00");
+    expect(data.totals).toEqual({ inflow: "50.00", outflow: "20.00", net: "30.00" });
+    const may = data.months.find((month) => month.month === "2026-05");
+    expect(may?.count).toBe(2);
+    expect(may?.transactions.map((item) => item.id).sort()).toEqual([
+      "qa_hidden_history_expense",
+      "qa_hidden_history_income"
+    ]);
+    expect(may?.transactions[0]?.runningBalance).toBe("120.00");
+  });
+
   test("transaction list limit and offset can cover all listable rows", async () => {
     const existing = sqlite
       .prepare(

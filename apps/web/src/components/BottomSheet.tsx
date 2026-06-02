@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 interface BottomSheetProps {
   title: string;
@@ -10,7 +11,7 @@ interface BottomSheetProps {
 }
 
 export function BottomSheet({ title, children, confirmLabel = "完成", confirmDisabled = false, onClose, onConfirm }: BottomSheetProps) {
-  return (
+  const sheet = (
     <div className="sheet-backdrop" onClick={onClose}>
       <section className="bottom-sheet" onClick={(event) => event.stopPropagation()}>
         <header>
@@ -26,4 +27,7 @@ export function BottomSheet({ title, children, confirmLabel = "完成", confirmD
       </section>
     </div>
   );
+
+  if (typeof document === "undefined") return sheet;
+  return createPortal(sheet, document.body);
 }

@@ -198,7 +198,10 @@ export function AssetsPage() {
       navigate(`/assets/accounts/${account.id}`);
       return;
     }
-    const groupQuery = account.loanGroupId ? `?groupId=${encodeURIComponent(account.loanGroupId)}` : "";
+    const params = new URLSearchParams();
+    if (account.loanDirection) params.set("direction", account.loanDirection);
+    if (account.loanGroupId) params.set("groupId", account.loanGroupId);
+    const groupQuery = params.toString() ? `?${params.toString()}` : "";
     navigate(`/loans${groupQuery}`);
   }
 

@@ -8,9 +8,13 @@ import { AmountKeyboard } from "../components/AmountKeyboard";
 import { BottomSheet } from "../components/BottomSheet";
 import { CategoryGrid } from "../components/CategoryGrid";
 import { CategoryIcon } from "../components/CategoryIcon";
+import { EntryDatePicker } from "../components/EntryDatePicker";
 import { SegmentedControl } from "../components/SegmentedControl";
 import { queryClient } from "../app/queryClient";
+import { useCurrentDateKey } from "../hooks/useCurrentDateKey";
 import { apiGet, apiPost, apiPut } from "../lib/api";
+import { formatMoney } from "../lib/format";
+import { isDateKey } from "../lib/localDate";
 import { type LedgerAccount, type LedgerTransaction, members } from "../lib/ledgerStore";
 
 function evaluateAmount(input: string): number {
@@ -48,6 +52,10 @@ function amountInputFromTransaction(amount: string): string {
   return Number.isFinite(value) && value > 0 ? value.toFixed(2) : "0";
 }
 
+function formatEntryDate(dateKey: string) {
+  return `${dateKey.slice(5, 7)}月${dateKey.slice(8, 10)}日`;
+}
+
 export function EntryEditorPage() {
   const navigate = useNavigate();
   const { id: editId } = useParams();
@@ -55,6 +63,8 @@ export function EntryEditorPage() {
   const isEditing = Boolean(editId);
   const queryDate = searchParams.get("date");
   const queryAccountId = searchParams.get("accountId");
+  const todayKey = useCurrentDateKey();
+  const validQueryDate = isDateKey(queryDate) ? queryDate : null;
   const { data: categoryData, isError: isCategoryError } = useQuery({
     queryKey: ["categories"],
     queryFn: () => apiGet<CategorySummary[]>("/api/categories")
@@ -96,9 +106,8 @@ export function EntryEditorPage() {
   });
   const [mode, setMode] = useState<EntryMode>("expense");
   const [amountInput, setAmountInput] = useState("0");
-  const [date, setDate] = useState(() =>
-    queryDate?.match(/^\d{4}-\d{2}-\d{2}$/) ? queryDate : new Date().toISOString().slice(0, 10)
-  );
+  const [date, setDate] = useState(() => validQueryDate ?? todayKey);
+  const [dateTouched, setDateTouched] = useState(Boolean(validQueryDate));
   const [accountId, setAccountId] = useState(queryAccountId || "cash");
   const [member, setMember] = useState("我");
   const [note, setNote] = useState("");
@@ -143,6 +152,10 @@ export function EntryEditorPage() {
       setToAccountId(accounts.find((account) => account.id !== fromAccountId)?.id ?? accounts[0]?.id ?? "");
     }
   }, [accountId, accounts, fromAccountId, toAccountId]);
+
+  useEffect(() => {
+    if (!isEditing && !validQueryDate && !dateTouched) setDate(todayKey);
+  }, [dateTouched, isEditing, todayKey, validQueryDate]);
 
   useEffect(() => {
     if (!isEditing || !editId || !editingTransaction || loadedEditId === editId) return;
@@ -308,7 +321,7 @@ export function EntryEditorPage() {
 
       <div className="entry-tools">
         <button type="button" onClick={() => setSheet("date")}>
-          {date.slice(5).replace("-", "月")}日
+          {formatEntryDate(date)}
         </button>
         <button type="button" onClick={() => {
           setAccountTarget(mode === "transfer" ? "from" : "single");
@@ -336,15 +349,30 @@ export function EntryEditorPage() {
 
       {sheet === "date" ? (
         <BottomSheet title="选择日期" onClose={() => setSheet(null)}>
-          <input className="sheet-input" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+          <EntryDatePicker
+            value={date}
+            todayKey={todayKey}
+            onSelect={(nextDate) => {
+              setDateTouched(true);
+              setDate(nextDate);
+              setSheet(null);
+            }}
+          />
         </BottomSheet>
       ) : null}
 
       {sheet === "account" ? (
         <BottomSheet title="选择账户" onClose={() => setSheet(null)}>
-          <div className="sheet-list">
+          <div className="account-picker-list">
             {accounts.map((item) => (
               <button
+                className={
+                  (mode !== "transfer" && accountId === item.id) ||
+                  (mode === "transfer" && accountTarget === "from" && fromAccountId === item.id) ||
+                  (mode === "transfer" && accountTarget === "to" && toAccountId === item.id)
+                    ? "is-selected"
+                    : ""
+                }
                 key={item.id}
                 type="button"
                 onClick={() => {
@@ -360,7 +388,11 @@ export function EntryEditorPage() {
                   setSheet(null);
                 }}
               >
-                <span>{item.name}</span>
+                <CategoryIcon color={item.color} icon={item.icon} label={item.name} size="sm" />
+                <span>
+                  <strong>{item.name}</strong>
+                  <small>{item.kind === "liability" ? "负债账户" : "资产账户"} · ¥{formatMoney(item.balance)}</small>
+                </span>
                 {(mode !== "transfer" && accountId === item.id) ||
                 (mode === "transfer" && accountTarget === "from" && fromAccountId === item.id) ||
                 (mode === "transfer" && accountTarget === "to" && toAccountId === item.id) ? (

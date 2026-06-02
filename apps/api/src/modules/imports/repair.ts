@@ -2,14 +2,12 @@ import crypto from "node:crypto";
 
 import { sqlite } from "../../db/client.js";
 import { createId } from "../../utils/id.js";
+import { defaultPayableGroupId, defaultReceivableGroupId, importedLoanGroupForLoan } from "./loanGroupRules.js";
 import { rebuildLoanRecords, signedLoanTransactionAmount, type ParsedLoanInput, type RebuiltLoan } from "./normalizers.js";
 
 type RepairOptions = {
   now?: string;
 };
-
-const defaultReceivableGroupId = "loan_group_receivable_default";
-const defaultPayableGroupId = "loan_group_payable_default";
 
 function ensureDefaultLoanGroups(created = new Date().toISOString()) {
   const insert = sqlite.prepare(`
@@ -24,6 +22,36 @@ function ensureDefaultLoanGroups(created = new Date().toISOString()) {
 
 function defaultLoanGroupId(direction: RebuiltLoan["direction"]) {
   return direction === "receivable" ? defaultReceivableGroupId : defaultPayableGroupId;
+}
+
+function ensureImportedLoanGroup(loan: RebuiltLoan, created: string) {
+  const group = importedLoanGroupForLoan(loan);
+  if (group.id === defaultReceivableGroupId || group.id === defaultPayableGroupId) return defaultLoanGroupId(loan.direction);
+  const existing = sqlite
+    .prepare("SELECT id FROM loan_groups WHERE name = ? AND direction = ? AND archived_at IS NULL LIMIT 1")
+    .get(group.name, group.direction) as { id: string } | undefined;
+  if (existing) {
+    sqlite
+      .prepare("UPDATE loan_groups SET color = ?, icon = ?, include_in_assets = ?, sort_order = ?, updated_at = ? WHERE id = ?")
+      .run(group.color, group.icon, group.includeInAssets, group.sortOrder, created, existing.id);
+    return existing.id;
+  }
+
+  sqlite
+    .prepare(
+      `
+      INSERT OR IGNORE INTO loan_groups
+        (id, name, direction, color, icon, include_in_assets, sort_order, is_default, created_at, updated_at)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `
+    )
+    .run(group.id, group.name, group.direction, group.color, group.icon, group.includeInAssets, group.sortOrder, created, created);
+
+  const row = sqlite
+    .prepare("SELECT id FROM loan_groups WHERE name = ? AND direction = ? AND archived_at IS NULL LIMIT 1")
+    .get(group.name, group.direction) as { id: string } | undefined;
+  return row?.id ?? group.id;
 }
 
 type CategoryMismatchRow = {
@@ -504,7 +532,7 @@ function insertRebuiltLoans(loans: RebuiltLoan[], orphanTransactions: OrphanLoan
     insertLoan.run(
       loanId,
       loan.direction,
-      defaultLoanGroupId(loan.direction),
+      ensureImportedLoanGroup(loan, now),
       loan.counterparty,
       money(loan.principalAmount),
       money(loan.remainingAmount),

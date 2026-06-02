@@ -8,15 +8,12 @@ import { BottomSheet } from "../components/BottomSheet";
 import { CategoryIcon } from "../components/CategoryIcon";
 import { apiGet } from "../lib/api";
 import { absoluteMoney, formatMoney } from "../lib/format";
+import { addDaysKey, localDateKey, localMonthStart } from "../lib/localDate";
 import type { LedgerAccount, LedgerTransaction } from "../lib/ledgerStore";
 
 type DatePreset = "month" | "quarter" | "all" | "custom";
 type TypeFilter = "all" | "income" | "expense" | "transfer";
 type SheetName = "date" | "filter" | null;
-
-function dateInputValue(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
 
 function typeLabel(type: TypeFilter): string {
   if (type === "income") return "收入";
@@ -54,13 +51,12 @@ function buildTransactionSearchUrl(options: {
 }
 
 export function SearchPage() {
-  const today = dateInputValue(new Date());
-  const ninetyDaysAgo = new Date();
-  ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 89);
+  const today = localDateKey();
+  const ninetyDaysAgo = addDaysKey(today, -89);
 
   const [keyword, setKeyword] = useState("");
   const [datePreset, setDatePreset] = useState<DatePreset>("month");
-  const [startDate, setStartDate] = useState(() => `${today.slice(0, 8)}01`);
+  const [startDate, setStartDate] = useState(() => localMonthStart(today));
   const [endDate, setEndDate] = useState(today);
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -113,11 +109,11 @@ export function SearchPage() {
   function applyPreset(nextPreset: DatePreset) {
     setDatePreset(nextPreset);
     if (nextPreset === "month") {
-      setStartDate(`${today.slice(0, 8)}01`);
+      setStartDate(localMonthStart(today));
       setEndDate(today);
     }
     if (nextPreset === "quarter") {
-      setStartDate(dateInputValue(ninetyDaysAgo));
+      setStartDate(ninetyDaysAgo);
       setEndDate(today);
     }
     if (nextPreset === "all") {

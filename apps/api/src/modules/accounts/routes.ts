@@ -4,6 +4,7 @@ import { z } from "zod";
 import { sqlite } from "../../db/client.js";
 import { badRequest, notFound, ok } from "../../utils/http.js";
 import { createId } from "../../utils/id.js";
+import { currentLocalYear, localDateKey, localMonthEnd } from "../../utils/localDate.js";
 
 type AccountRow = {
   id: string;
@@ -57,6 +58,7 @@ type LoanGroupRow = {
 const defaultReceivableGroupId = "loan_group_receivable_default";
 const defaultPayableGroupId = "loan_group_payable_default";
 const receivableVirtualPrefix = "virtual_receivable:";
+const payableVirtualPrefix = "virtual_payable:";
 const legacyReceivableVirtualId = "virtual_receivable";
 
 const accountKindSchema = z.enum(["asset", "liability"]);
@@ -88,7 +90,7 @@ const reorderAccountsSchema = z.object({
 });
 
 const statementQuerySchema = z.object({
-  year: z.coerce.number().int().min(1970).max(2999).default(() => new Date().getFullYear())
+  year: z.coerce.number().int().min(1970).max(2999).default(() => currentLocalYear())
 });
 
 const listAccountsQuerySchema = z.object({
@@ -104,7 +106,7 @@ const adjustBalanceSchema = z
   })
   .transform((payload) => ({
     targetBalance: payload.targetBalance ?? payload.balance,
-    happenedOn: payload.happenedOn ?? new Date().toISOString().slice(0, 10),
+    happenedOn: payload.happenedOn ?? localDateKey(),
     note: payload.note
   }));
 
@@ -156,13 +158,29 @@ function virtualReceivableId(groupId: string) {
   return `${receivableVirtualPrefix}${groupId}`;
 }
 
-function parseVirtualReceivableId(id: string) {
-  if (id === legacyReceivableVirtualId) return defaultReceivableGroupId;
-  return id.startsWith(receivableVirtualPrefix) ? id.slice(receivableVirtualPrefix.length) : null;
+function virtualPayableId(groupId: string) {
+  return `${payableVirtualPrefix}${groupId}`;
 }
 
-function receivableSummaryAccounts(now = new Date().toISOString()) {
+function parseVirtualLoanAccountId(id: string): { direction: "receivable" | "payable"; groupId: string } | null {
+  if (id === legacyReceivableVirtualId) return { direction: "receivable", groupId: defaultReceivableGroupId };
+  if (id.startsWith(receivableVirtualPrefix)) return { direction: "receivable", groupId: id.slice(receivableVirtualPrefix.length) };
+  if (id.startsWith(payableVirtualPrefix)) return { direction: "payable", groupId: id.slice(payableVirtualPrefix.length) };
+  return null;
+}
+
+function virtualLoanAccountId(direction: "receivable" | "payable", groupId: string) {
+  return direction === "receivable" ? virtualReceivableId(groupId) : virtualPayableId(groupId);
+}
+
+function virtualLoanSortOrder(row: LoanGroupRow, direction: "receivable" | "payable") {
+  if (row.sortOrder >= 100) return row.sortOrder;
+  return (direction === "receivable" ? 9_000_000 : 9_500_000) + row.sortOrder;
+}
+
+function loanSummaryAccounts(direction: "receivable" | "payable", now = new Date().toISOString()) {
   ensureLoanGroups(now);
+  const fallbackGroupId = direction === "receivable" ? defaultReceivableGroupId : defaultPayableGroupId;
   const rows = sqlite
     .prepare(
       `
@@ -179,47 +197,47 @@ function receivableSummaryAccounts(now = new Date().toISOString()) {
         g.created_at AS createdAt,
         g.updated_at AS updatedAt,
         COALESCE(SUM(CASE
-          WHEN l.deleted_at IS NULL AND l.direction = 'receivable' AND l.status = 'open'
+          WHEN l.deleted_at IS NULL AND l.direction = ? AND l.status = 'open'
           THEN CAST(l.remaining_amount_cache AS REAL)
           ELSE 0
         END), 0) AS balance
       FROM loan_groups g
       LEFT JOIN loans l ON COALESCE(l.loan_group_id, ?) = g.id
       WHERE g.archived_at IS NULL
-        AND g.direction = 'receivable'
+        AND g.direction = ?
       GROUP BY g.id
       ORDER BY g.sort_order ASC, g.created_at ASC
     `
     )
-    .all(defaultReceivableGroupId) as LoanGroupRow[];
+    .all(direction, fallbackGroupId, direction) as LoanGroupRow[];
 
   return rows.map((row) => ({
-    id: virtualReceivableId(row.id),
+    id: virtualLoanAccountId(direction, row.id),
     name: row.name,
-    type: "receivable_summary",
-    kind: "asset" as const,
+    type: direction === "receivable" ? "receivable_summary" : "payable_summary",
+    kind: direction === "receivable" ? ("asset" as const) : ("liability" as const),
     initialBalance: "0.00",
     balance: Number(row.balance ?? 0).toFixed(2),
     color: row.color,
     icon: row.icon,
     includeInAssets: Boolean(row.includeInAssets),
-    sortOrder: 9_000_000 + row.sortOrder,
+    sortOrder: virtualLoanSortOrder(row, direction),
     archivedAt: null,
     createdAt: row.createdAt ?? now,
     updatedAt: row.updatedAt ?? now,
     virtual: true,
-    loanGroupId: row.id
+    loanGroupId: row.id,
+    loanDirection: direction
   }));
 }
 
 function monthBounds(year: number, month: number) {
-  const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
-  const end = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
-  return { startDate, endDate: end };
+  const monthKey = `${year}-${String(month).padStart(2, "0")}`;
+  return { startDate: `${monthKey}-01`, endDate: localMonthEnd(monthKey) };
 }
 
 function dateLabel(date: string): string {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateKey();
   if (date === today) return "今天";
   return `${Number(date.slice(8, 10))}日`;
 }
@@ -245,19 +263,55 @@ function statementCategory(row: AccountStatementRow) {
   };
 }
 
-function availableStatementYears(accountId: string, selectedYear: number) {
+function sqlPlaceholders(values: unknown[]) {
+  return values.map(() => "?").join(", ");
+}
+
+function statementSourceAccountIds(account: AccountRow) {
+  const rows = sqlite
+    .prepare(
+      `
+      SELECT id
+      FROM accounts
+      WHERE name = ?
+        AND archived_at IS NULL
+        AND (id = ? OR hidden = 1)
+      ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, created_at ASC, id ASC
+    `
+    )
+    .all(account.name, account.id, account.id) as Array<{ id: string }>;
+  const ids = rows.map((row) => row.id);
+  return ids.length ? Array.from(new Set(ids)) : [account.id];
+}
+
+function transactionDelta(accountIds: string[], extraWhere = "", params: unknown[] = []) {
+  const row = sqlite
+    .prepare(
+      `
+      SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) AS amount
+      FROM transactions
+      WHERE account_id IN (${sqlPlaceholders(accountIds)})
+        AND deleted_at IS NULL
+        ${extraWhere}
+    `
+    )
+    .get(...accountIds, ...params) as { amount: number | null };
+  return row.amount ?? 0;
+}
+
+function availableStatementYears(accountIds: string[], selectedYear: number) {
   const rows = sqlite
     .prepare(
       `
       SELECT DISTINCT substr(happened_on, 1, 4) AS year
       FROM transactions
-      WHERE account_id = ?
+      WHERE account_id IN (${sqlPlaceholders(accountIds)})
         AND deleted_at IS NULL
       ORDER BY year DESC
     `
     )
-    .all(accountId) as Array<{ year: string | null }>;
-  const years = new Set<number>([selectedYear, new Date().getFullYear()]);
+    .all(...accountIds) as Array<{ year: string | null }>;
+  const years = new Set<number>([selectedYear, currentLocalYear()]);
   rows.forEach((row) => {
     const year = Number(row.year);
     if (Number.isInteger(year)) years.add(year);
@@ -388,8 +442,12 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
       .all() as AccountRow[];
 
     const serialized = rows.map(serializeAccount);
-    const receivables = query.includeVirtual ? receivableSummaryAccounts() : [];
-    return ok([...serialized, ...receivables]);
+    const virtualAccounts = query.includeVirtual ? [...loanSummaryAccounts("receivable"), ...loanSummaryAccounts("payable")] : [];
+    return ok(
+      [...serialized, ...virtualAccounts].sort(
+        (left, right) => left.sortOrder - right.sortOrder || left.kind.localeCompare(right.kind) || left.name.localeCompare(right.name, "zh-CN")
+      )
+    );
   });
 
   app.get("/audit/duplicates", async () => {
@@ -469,21 +527,14 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
     const params = z.object({ id: z.string() }).parse(request.params);
     const query = statementQuerySchema.parse(request.query);
     const account = readAccountForStatement(params.id);
+    const accountIds = statementSourceAccountIds(account);
     const year = query.year;
     const startDate = `${year}-01-01`;
     const endDate = `${year}-12-31`;
+    const accountPlaceholders = sqlPlaceholders(accountIds);
 
-    const openingDelta = sqlite
-      .prepare(
-        `
-        SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) AS amount
-        FROM transactions
-        WHERE account_id = ?
-          AND deleted_at IS NULL
-          AND happened_on < ?
-      `
-      )
-      .get(account.id, startDate) as { amount: number | null };
+    const sourceLifetimeDelta = transactionDelta(accountIds);
+    const openingDelta = transactionDelta(accountIds, "AND happened_on < ?", [startDate]);
 
     const rows = sqlite
       .prepare(
@@ -507,16 +558,16 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
         FROM transactions t
         LEFT JOIN categories c ON c.id = t.category_id
         LEFT JOIN members m ON m.id = t.member_id
-        WHERE t.account_id = ?
+        WHERE t.account_id IN (${accountPlaceholders})
           AND t.deleted_at IS NULL
           AND t.happened_on >= ?
           AND t.happened_on <= ?
         ORDER BY t.happened_on ASC, t.created_at ASC
       `
       )
-      .all(account.id, startDate, endDate) as AccountStatementRow[];
+      .all(...accountIds, startDate, endDate) as AccountStatementRow[];
 
-    let runningBalance = Number(account.initialBalance) + (openingDelta.amount ?? 0);
+    let runningBalance = account.balance - sourceLifetimeDelta + openingDelta;
     const serialized = rows.map((row) => {
       const delta = Number(row.amount);
       runningBalance += Number.isFinite(delta) ? delta : 0;
@@ -537,6 +588,7 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
         runningBalance: runningBalance.toFixed(2),
         account: account.name,
         accountId: account.id,
+        sourceAccountId: row.accountId,
         member: row.memberName ?? undefined,
         icon: meta.icon,
         color: meta.color,
@@ -585,7 +637,7 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
     return ok({
       account: serializeAccount(account),
       year,
-      availableYears: availableStatementYears(account.id, year),
+      availableYears: availableStatementYears(accountIds, year),
       totals: {
         inflow: totalInflow.toFixed(2),
         outflow: totalOutflow.toFixed(2),
@@ -679,8 +731,9 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
   app.put("/include-in-assets", async (request) => {
     const payload = includeInAssetsSchema.parse(request.body);
     const accountIds = Array.from(new Set(payload.accountIds));
-    const receivableGroupIds = new Set(accountIds.map(parseVirtualReceivableId).filter((id): id is string => Boolean(id)));
-    const realAccountIds = accountIds.filter((id) => !parseVirtualReceivableId(id));
+    const virtualLoanAccounts = accountIds.map(parseVirtualLoanAccountId).filter((item): item is { direction: "receivable" | "payable"; groupId: string } => Boolean(item));
+    const virtualLoanKeys = new Set(virtualLoanAccounts.map((item) => `${item.direction}:${item.groupId}`));
+    const realAccountIds = accountIds.filter((id) => !parseVirtualLoanAccountId(id));
     const rows = sqlite
       .prepare("SELECT id FROM accounts WHERE archived_at IS NULL AND hidden = 0")
       .all() as Array<{ id: string }>;
@@ -692,24 +745,29 @@ export const accountsRoutes: FastifyPluginAsync = async (app) => {
     }
     ensureLoanGroups();
     const groups = sqlite
-      .prepare("SELECT id FROM loan_groups WHERE archived_at IS NULL AND direction = 'receivable'")
-      .all() as Array<{ id: string }>;
-    const validGroupIds = new Set(groups.map((group) => group.id));
-    const unknownGroupId = Array.from(receivableGroupIds).find((id) => !validGroupIds.has(id));
-    if (unknownGroupId) {
-      throw badRequest(`应收分组不存在：${unknownGroupId}`);
+      .prepare("SELECT id, direction FROM loan_groups WHERE archived_at IS NULL")
+      .all() as Array<{ id: string; direction: "receivable" | "payable" }>;
+    const validGroupKeys = new Set(groups.map((group) => `${group.direction}:${group.id}`));
+    const unknownGroupKey = Array.from(virtualLoanKeys).find((key) => !validGroupKeys.has(key));
+    if (unknownGroupKey) {
+      throw badRequest(`借贷分组不存在：${unknownGroupKey}`);
     }
 
     const update = sqlite.prepare("UPDATE accounts SET include_in_assets = ?, updated_at = ? WHERE id = ?");
     const updated = new Date().toISOString();
     sqlite.transaction(() => {
       rows.forEach((row) => update.run(realAccountIds.includes(row.id) ? 1 : 0, updated, row.id));
-      const updateGroup = sqlite.prepare("UPDATE loan_groups SET include_in_assets = ?, updated_at = ? WHERE id = ? AND direction = 'receivable'");
-      groups.forEach((group) => updateGroup.run(receivableGroupIds.has(group.id) ? 1 : 0, updated, group.id));
-      writeSetting("assets.receivable.visible", receivableGroupIds.has(defaultReceivableGroupId), updated);
+      const updateGroup = sqlite.prepare("UPDATE loan_groups SET include_in_assets = ?, updated_at = ? WHERE id = ? AND direction = ?");
+      groups.forEach((group) => updateGroup.run(virtualLoanKeys.has(`${group.direction}:${group.id}`) ? 1 : 0, updated, group.id, group.direction));
+      writeSetting("assets.receivable.visible", virtualLoanKeys.has(`receivable:${defaultReceivableGroupId}`), updated);
     })();
 
-    return ok({ accountIds: [...realAccountIds, ...Array.from(receivableGroupIds).map(virtualReceivableId)] });
+    return ok({
+      accountIds: [
+        ...realAccountIds,
+        ...virtualLoanAccounts.map((item) => virtualLoanAccountId(item.direction, item.groupId))
+      ]
+    });
   });
 
   app.put("/:id", async (request) => {

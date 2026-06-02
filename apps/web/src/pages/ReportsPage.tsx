@@ -7,8 +7,11 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { BottomSheet } from "../components/BottomSheet";
 import { CategoryIcon } from "../components/CategoryIcon";
 import { SegmentedControl } from "../components/SegmentedControl";
+import { useCurrentDateKey } from "../hooks/useCurrentDateKey";
 import { apiGet } from "../lib/api";
 import { formatMoney } from "../lib/format";
+import { addDaysKey, localMonthEnd, localMonthStart, shiftMonthKey } from "../lib/localDate";
+import { resolveCategoryDateRange, type ReportRangeMode } from "./reportDateRange";
 
 type ReportTab = "category" | "trend" | "compare";
 type ReportType = "expense" | "income";
@@ -62,20 +65,6 @@ const tabs: Array<{ label: string; value: ReportTab }> = [
   { label: "对比", value: "compare" }
 ];
 
-function today() {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function monthStart(date = today()) {
-  return `${date.slice(0, 8)}01`;
-}
-
-function monthEnd(month: string) {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const end = new Date(Date.UTC(year ?? 1970, monthNumber ?? 1, 0));
-  return end.toISOString().slice(0, 10);
-}
-
 function currentYear() {
   return new Date().getFullYear();
 }
@@ -86,6 +75,10 @@ function validTab(value: string | null): ReportTab {
 
 function validType(value: string | null): ReportType {
   return value === "income" ? "income" : "expense";
+}
+
+function validRangeMode(value: string | null): ReportRangeMode {
+  return value === "custom" || value === "week" || value === "month" || value === "year" ? value : null;
 }
 
 function buildCategoryUrl(type: ReportType, from: string, to: string) {
@@ -119,10 +112,15 @@ function donutGradient(rows: CategoryReportRow[]) {
 export function ReportsPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const todayKey = useCurrentDateKey();
   const activeTab = validTab(searchParams.get("tab"));
   const categoryType = validType(searchParams.get("type"));
-  const categoryFrom = searchParams.get("from") ?? monthStart();
-  const categoryTo = searchParams.get("to") ?? today();
+  const categoryRange = resolveCategoryDateRange(
+    { from: searchParams.get("from"), to: searchParams.get("to"), mode: validRangeMode(searchParams.get("range")) },
+    todayKey
+  );
+  const categoryFrom = categoryRange.from;
+  const categoryTo = categoryRange.to;
   const trendYear = Number(searchParams.get("year") ?? currentYear());
   const compareType = validType(searchParams.get("compareType"));
   const [dateSheetOpen, setDateSheetOpen] = useState(false);
@@ -189,28 +187,24 @@ export function ReportsPage() {
 
   function applyPreset(preset: "week" | "month" | "year") {
     if (preset === "month") {
-      const start = monthStart();
-      updateParams({ from: start, to: monthEnd(start.slice(0, 7)) });
+      const start = localMonthStart(todayKey);
+      updateParams({ from: start, to: localMonthEnd(start.slice(0, 7)), range: "month" });
     }
     if (preset === "year") {
-      const year = currentYear();
-      updateParams({ from: `${year}-01-01`, to: `${year}-12-31` });
+      const year = todayKey.slice(0, 4);
+      updateParams({ from: `${year}-01-01`, to: `${year}-12-31`, range: "year" });
     }
     if (preset === "week") {
       const now = new Date();
       const day = now.getDay() || 7;
-      const start = new Date(now);
-      start.setDate(now.getDate() - day + 1);
-      updateParams({ from: start.toISOString().slice(0, 10), to: today() });
+      updateParams({ from: addDaysKey(todayKey, -day + 1), to: todayKey, range: "week" });
     }
     setDateSheetOpen(false);
   }
 
   function shiftMonth(delta: number) {
-    const [year, month] = categoryFrom.slice(0, 7).split("-").map(Number);
-    const date = new Date(Date.UTC(year ?? currentYear(), (month ?? 1) - 1 + delta, 1));
-    const nextMonth = date.toISOString().slice(0, 7);
-    updateParams({ from: `${nextMonth}-01`, to: monthEnd(nextMonth) });
+    const nextMonth = shiftMonthKey(categoryFrom.slice(0, 7), delta);
+    updateParams({ from: `${nextMonth}-01`, to: localMonthEnd(nextMonth), range: "month" });
   }
 
   return (
@@ -467,7 +461,7 @@ export function ReportsPage() {
           confirmLabel="确定"
           onClose={() => setDateSheetOpen(false)}
           onConfirm={() => {
-            updateParams({ from: dateDraft.from, to: dateDraft.to });
+            updateParams({ from: dateDraft.from, to: dateDraft.to, range: "custom" });
             setDateSheetOpen(false);
           }}
         >

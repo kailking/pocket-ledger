@@ -1,3 +1,5 @@
+name: pocket-ledger
+
 services:
   pocket-ledger:
     image: pocket-ledger:latest
@@ -13,6 +15,7 @@ services:
       APP_ENV: "production"
       APP_PORT: "3000"
       APP_URL: "${DOCKER_APP_URL:-http://localhost:3456}"
+      APP_TIME_ZONE: "${APP_TIME_ZONE:-Asia/Shanghai}"
       DATABASE_URL: "file:/data/app.db"
       BACKUP_DIR: "/data/backups"
       UPLOAD_DIR: "/data/uploads"

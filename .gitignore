@@ -17,15 +17,20 @@ build/
 /screenshots/
 /screenshots2/
 /screenshots3/
+/screenshots4/
+/screenshots5/
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.xls
+*.xlsx
 *.log
 *.tar
 *.tar.gz
+*.zip
 /-
 
 .DS_Store

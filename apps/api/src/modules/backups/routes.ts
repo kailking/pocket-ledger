@@ -25,6 +25,8 @@ type BackupSchedule = {
   nextRunAt: string | null;
 };
 
+type BackupTimeStat = Pick<fs.Stats, "birthtime" | "mtime">;
+
 const createBackupSchema = z.object({
   name: z.string().trim().min(1).max(80).optional()
 });
@@ -94,8 +96,36 @@ function sanitizeBackupPart(value: string) {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
 }
 
+function timeParts(date: Date, timeZone = env.APP_TIME_ZONE) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    hourCycle: "h23"
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: parts.year ?? "1970",
+    month: parts.month ?? "01",
+    day: parts.day ?? "01",
+    hour: parts.hour ?? "00",
+    minute: parts.minute ?? "00",
+    second: parts.second ?? "00"
+  };
+}
+
+export function backupTimestampPart(date = new Date(), timeZone = env.APP_TIME_ZONE) {
+  const parts = timeParts(date, timeZone);
+  return `${parts.year}${parts.month}${parts.day}-${parts.hour}${parts.minute}${parts.second}`;
+}
+
 function timestampPart(date = new Date()) {
-  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  return backupTimestampPart(date);
 }
 
 function backupPath(fileName: string) {
@@ -108,12 +138,18 @@ function backupPath(fileName: string) {
   return resolved;
 }
 
+export function backupCreatedAt(stat: BackupTimeStat) {
+  const birthtime = stat.birthtime;
+  if (birthtime.getFullYear() >= 2000) return birthtime.toISOString();
+  return stat.mtime.toISOString();
+}
+
 function toSummary(fileName: string, stat: fs.Stats): BackupSummary {
   return {
     id: fileName,
     fileName,
     sizeBytes: stat.size,
-    createdAt: stat.birthtime.toISOString(),
+    createdAt: backupCreatedAt(stat),
     updatedAt: stat.mtime.toISOString(),
     downloadPath: `/api/backups/${encodeURIComponent(fileName)}/export`
   };

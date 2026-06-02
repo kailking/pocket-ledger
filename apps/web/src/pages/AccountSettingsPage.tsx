@@ -7,6 +7,7 @@ import { queryClient } from "../app/queryClient";
 import { ConfirmDialog, type ConfirmDialogOptions } from "../components/ConfirmDialog";
 import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
 import { formatMoney } from "../lib/format";
+import { localDateKey } from "../lib/localDate";
 import type { LedgerAccount } from "../lib/ledgerStore";
 
 type AccountDraft = {
@@ -87,7 +88,7 @@ export function AccountSettingsPage() {
       if (Math.abs(targetBalance - Number(account.balance)) >= 0.005) {
         await apiPost(`/api/accounts/${account.id}/adjust-balance`, {
           targetBalance,
-          happenedOn: new Date().toISOString().slice(0, 10),
+          happenedOn: localDateKey(),
           note: "账户设置调整余额"
         });
       }
